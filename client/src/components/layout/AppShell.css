@@ -1,0 +1,87 @@
+/* Sidebar width transition */
+.sidebar-nav,
+.sidebar-paper,
+.main-content {
+  transition: width 0.25s ease-in-out;
+}
+
+/* Prevent text from overflowing when collapsed */
+.sidebar-paper {
+  overflow-x: hidden;
+}
+
+/* Sidebar header */
+.sidebar-header {
+  overflow: hidden;
+}
+
+/* Helpdesk text */
+.sidebar-brand-text {
+  white-space: nowrap;
+  overflow: hidden;
+
+  opacity: 1;
+  max-width: 200px;
+
+  transition:
+    opacity 0.2s ease-in-out,
+    max-width 0.25s ease-in-out;
+}
+
+.sidebar-brand-text.collapsed {
+  opacity: 0;
+  max-width: 0;
+}
+
+/* Navigation item */
+.sidebar-nav-item {
+  min-height: 48px;
+
+  transition:
+    background-color 0.2s ease,
+    justify-content 0.25s ease-in-out,
+    padding 0.25s ease-in-out;
+}
+
+/* Navigation label */
+.sidebar-label {
+  white-space: nowrap;
+  overflow: hidden;
+
+  opacity: 1;
+  max-width: 200px;
+  margin-left: 0;
+
+  transition:
+    opacity 0.2s ease-in-out,
+    max-width 0.25s ease-in-out,
+    margin-left 0.25s ease-in-out;
+}
+
+/* Hide label when collapsed */
+.sidebar-label.collapsed {
+  opacity: 0;
+  max-width: 0;
+  margin-left: 0;
+}
+
+/* Arrow animation */
+.sidebar-toggle-icon {
+  transition: transform 0.25s ease-in-out;
+}
+
+/* Point arrow toward right when collapsed */
+.sidebar-toggle-icon.collapsed {
+  transform: rotate(180deg);
+}
+
+/* Toggle button */
+.sidebar-toggle-button {
+  transition:
+    background-color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.sidebar-toggle-button:hover {
+  background-color: rgba(0, 0, 0, 0.08);
+}

@@ -1,0 +1,346 @@
+// Prisma schema for the IT Helpdesk / Ticketing system.
+// Run `npx prisma migrate dev --name init` inside /server to create the DB and apply this schema.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Access control
+// ---------------------------------------------------------------------------
+
+// Kept as a table (rather than a hardcoded enum) so an Admin could in principle
+// manage roles later; seed.js guarantees ADMIN / AGENT / USER always exist.
+model Role {
+  id        String   @id @default(cuid())
+  name      String   @unique // ADMIN | AGENT | USER
+  label     String
+  createdAt DateTime @default(now())
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  roleId       String
+  isActive     Boolean   @default(true)
+  avatarUrl    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  departmentId String?
+  isManager    Boolean   @default(false)
+
+  role       Role        @relation(fields: [roleId], references: [id])
+  department Department? @relation(fields: [departmentId], references: [id])
+
+  teamMemberships   TeamMember[]
+  requestedTickets  Ticket[]          @relation("TicketRequester")
+  assignedTickets   Ticket[]          @relation("TicketAssignee")
+  managedTickets    Ticket[]          @relation("TicketManager")
+  comments          TicketComment[]
+  attachmentsUploaded TicketAttachment[]
+  historyEntries    TicketHistory[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  refreshTokens     RefreshToken[]
+
+  @@index([roleId])
+  @@index([departmentId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Teams
+// ---------------------------------------------------------------------------
+
+model Team {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members TeamMember[]
+  tickets Ticket[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id       String   @id @default(cuid())
+  teamId   String
+  userId   String
+  joinedAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@map("team_members")
+}
+
+// ---------------------------------------------------------------------------
+// Organizational departments (ticket routing target on the raise-a-ticket
+// form — distinct from Team, which groups agents for ticket ownership/RBAC).
+// ---------------------------------------------------------------------------
+
+model Department {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users   User[]
+  issues  Issue[]
+
+  ticketsFrom Ticket[] @relation("TicketFromDepartment")
+  ticketsTo   Ticket[] @relation("TicketToDepartment")
+
+  @@map("departments")
+}
+
+// Predefined per-department issue list shown in the ticket form's searchable
+// Issue dropdown. The row with isOther=true powers the "Others" -> custom
+// text fallback (see Ticket.customIssueText).
+model Issue {
+  id           String   @id @default(cuid())
+  departmentId String
+  name         String
+  isOther      Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  tickets    Ticket[]
+
+  @@unique([name, departmentId])
+  @@index([departmentId])
+  @@map("issues")
+}
+
+// ---------------------------------------------------------------------------
+// Ticket taxonomy
+// ---------------------------------------------------------------------------
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  parentId    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent   Category?  @relation("CategoryToSubcategory", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryToSubcategory")
+  tickets  Ticket[]
+
+  @@unique([name, parentId])
+  @@map("categories")
+}
+
+// Low / Medium / High / Critical — ordered by `level` (1 = lowest).
+model Priority {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  level     Int      @unique
+  color     String   @default("#757575")
+  createdAt DateTime @default(now())
+
+  tickets    Ticket[]
+  slaPolicy  SlaPolicy?
+
+  @@map("priorities")
+}
+
+model SlaPolicy {
+  id                   String   @id @default(cuid())
+  priorityId           String   @unique
+  responseTimeMinutes  Int // time within which first response/comment is due
+  resolutionTimeMinutes Int // time within which ticket must be resolved
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  priority Priority @relation(fields: [priorityId], references: [id], onDelete: Cascade)
+
+  @@map("sla_policies")
+}
+
+// ---------------------------------------------------------------------------
+// Tickets
+// ---------------------------------------------------------------------------
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  ON_HOLD
+  RESOLVED
+  CLOSED
+  REOPENED
+}
+
+model Ticket {
+  id           String       @id @default(cuid())
+  // Human-facing sequence powering ticketNumber, e.g. seq=1 -> "TKT-00001".
+  seq          Int          @default(autoincrement())
+  ticketNumber String       @unique
+  title        String
+  description  String       @db.Text
+  status       TicketStatus @default(OPEN)
+
+  categoryId String
+  priorityId String
+  requesterId String
+  assigneeId  String?
+  teamId      String?
+
+  dueAt          DateTime? // resolution deadline derived from SLA
+  firstResponseAt DateTime?
+  resolvedAt     DateTime?
+  closedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category  Category @relation(fields: [categoryId], references: [id])
+  priority  Priority @relation(fields: [priorityId], references: [id])
+  requester User     @relation("TicketRequester", fields: [requesterId], references: [id])
+  assignee  User?    @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  team      Team?    @relation(fields: [teamId], references: [id])
+
+  comments    TicketComment[]
+  attachments TicketAttachment[]
+  history     TicketHistory[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([priorityId])
+  @@index([assigneeId])
+  @@index([requesterId])
+  @@index([categoryId])
+  @@index([teamId])
+  @@index([createdAt])
+  @@map("tickets")
+}
+
+model TicketComment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  authorId   String
+  body       String   @db.Text
+  isInternal Boolean  @default(false) // internal notes hidden from end users
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  ticket      Ticket             @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author      User               @relation(fields: [authorId], references: [id])
+  attachments TicketAttachment[]
+
+  @@index([ticketId])
+  @@map("ticket_comments")
+}
+
+model TicketAttachment {
+  id           String   @id @default(cuid())
+  ticketId     String
+  commentId    String?
+  uploadedById String
+  fileName     String
+  filePath     String
+  fileSize     Int
+  mimeType     String
+  createdAt    DateTime @default(now())
+
+  ticket     Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  comment    TicketComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  uploadedBy User           @relation(fields: [uploadedById], references: [id])
+
+  @@index([ticketId])
+  @@map("ticket_attachments")
+}
+
+// Full activity/audit trail scoped to a single ticket (status changes,
+// reassignment, priority changes, etc.) shown on the ticket detail timeline.
+model TicketHistory {
+  id        String   @id @default(cuid())
+  ticketId  String
+  userId    String
+  action    String // e.g. STATUS_CHANGE, ASSIGNED, PRIORITY_CHANGE, COMMENTED, REOPENED
+  fieldName String?
+  oldValue  String?
+  newValue  String?
+  createdAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@index([ticketId])
+  @@map("ticket_history")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications & system-wide audit log
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  ticketId  String?
+  type      String // TICKET_CREATED | TICKET_ASSIGNED | STATUS_CHANGED | NEW_COMMENT | SLA_BREACH
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// System-wide log of sensitive/administrative actions (distinct from
+// TicketHistory, which is ticket-scoped only).
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String // e.g. USER_CREATED, USER_DEACTIVATED, SLA_UPDATED, TICKET_BULK_ASSIGN
+  entityType String // e.g. User, Ticket, Category, SlaPolicy
+  entityId   String?
+  oldValues  Json?
+  newValues  Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

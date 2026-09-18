@@ -1,0 +1,54 @@
+import { Timeline, TimelineItem, TimelineSeparator, TimelineDot, TimelineConnector, TimelineContent, TimelineOppositeContent } from "@mui/lab";
+import { Typography, Paper } from "@mui/material";
+import { format } from "date-fns";
+
+const ACTION_LABELS = {
+  CREATED: "Ticket created",
+  STATUS_CHANGE: "Status changed",
+  ASSIGNED: "Reassigned",
+  TEAM_CHANGE: "Team changed",
+  PRIORITY_CHANGE: "Priority changed",
+  CATEGORY_CHANGE: "Category changed",
+  COMMENTED: "Commented",
+  BULK_UPDATE: "Bulk updated",
+};
+
+const ACTION_COLORS = {
+  CREATED: "primary",
+  STATUS_CHANGE: "warning",
+  ASSIGNED: "info",
+  COMMENTED: "grey",
+};
+
+export default function ActivityTimeline({ history }) {
+  if (!history.length) return null;
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Typography variant="subtitle1" fontWeight={700} gutterBottom>Activity History</Typography>
+      <Timeline sx={{ p: 0, m: 0 }}>
+        {history.map((h, idx) => (
+          <TimelineItem key={h.id}>
+            <TimelineOppositeContent sx={{ flex: 0.3 }} color="text.secondary" variant="caption">
+              {format(new Date(h.createdAt), "MMM d, h:mm a")}
+            </TimelineOppositeContent>
+            <TimelineSeparator>
+              <TimelineDot color={ACTION_COLORS[h.action] || "grey"} />
+              {idx < history.length - 1 && <TimelineConnector />}
+            </TimelineSeparator>
+            <TimelineContent>
+              <Typography variant="body2" fontWeight={600}>
+                {ACTION_LABELS[h.action] || h.action} <Typography component="span" variant="body2" color="text.secondary">by {h.user.name}</Typography>
+              </Typography>
+              {h.fieldName && (
+                <Typography variant="caption" color="text.secondary">
+                  {h.oldValue || "—"} → {h.newValue || "—"}
+                </Typography>
+              )}
+            </TimelineContent>
+          </TimelineItem>
+        ))}
+      </Timeline>
+    </Paper>
+  );
+}
