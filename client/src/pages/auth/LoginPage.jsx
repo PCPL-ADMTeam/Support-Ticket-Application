@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Box, Paper, TextField, Button, Typography, Alert, Stack } from "@mui/material";
-import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import { useAuth } from "../../context/AuthContext";
 import { homeForRole } from "../../routes/ProtectedRoute";
+import logo from "../../assets/logo.png";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -34,10 +34,13 @@ export default function LoginPage() {
     <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "background.default", p: 2, backgroundImage: "radial-gradient(circle at 15% 20%, #ffe1e3 0, transparent 28%), radial-gradient(circle at 85% 80%, #f8dadd 0, transparent 24%)" }}>
       <Paper variant="outlined" sx={{ p: { xs: 3, sm: 4 }, width: 420, maxWidth: "100%", borderRadius: 4, boxShadow: "0 20px 50px rgba(102, 23, 31, 0.12)" }}>
         <Stack alignItems="center" spacing={1} sx={{ mb: 3 }}>
-          <Box sx={{ width: 64, height: 64, display: "grid", placeItems: "center", borderRadius: 3, bgcolor: "primary.main", color: "primary.contrastText", boxShadow: "0 10px 24px rgba(200, 30, 42, 0.25)", mb: 1 }}>
-            <SupportAgentIcon sx={{ fontSize: 36 }} />
-          </Box>
-          <Typography variant="h5" fontWeight={700}>Helpdesk Sign In</Typography>
+          <Box
+            component="img"
+            src={logo}
+            alt="SOLVORA"
+            sx={{ width: 64, height: 64, borderRadius: "50%", boxShadow: "0 10px 24px rgba(200, 30, 42, 0.25)", mb: 1 }}
+          />
+          <Typography variant="h5" fontWeight={700}>SOLVORA </Typography>
           <Typography variant="body2" color="text.secondary">IT Ticketing & Support System</Typography>
         </Stack>
 
@@ -56,3 +59,4 @@ export default function LoginPage() {
     </Box>
   );
 }
+

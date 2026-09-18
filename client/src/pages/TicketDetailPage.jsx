@@ -17,6 +17,7 @@ import { ticketsApi } from "../api/tickets";
 import { categoriesApi, prioritiesApi } from "../api/catalog";
 import { usersApi } from "../api/users";
 import { teamsApi } from "../api/teams";
+import { departmentsApi } from "../api/departments";
 import { useAuth } from "../context/AuthContext";
 import LoadingState from "../components/common/LoadingState";
 import StatusBadge from "../components/common/StatusBadge";
@@ -36,12 +37,13 @@ export default function TicketDetailPage() {
   const [ticket, setTicket] = useState(null);
   const [loading, setLoading] = useState(true);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [customIssueDraft, setCustomIssueDraft] = useState("");
 
   const [agents, setAgents] = useState([]);
   const [teams, setTeams] = useState([]);
   const [categories, setCategories] = useState([]);
   const [priorities, setPriorities] = useState([]);
+  const [departments, setDepartments] = useState([]);
 
   const isStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
   const isOwner = ticket?.requester.id === user.id;
@@ -58,10 +60,15 @@ export default function TicketDetailPage() {
       usersApi.assignableAgents().then(({ data }) => setAgents(data.data));
       teamsApi.list().then(({ data }) => setTeams(data.data));
       categoriesApi.list().then(({ data }) => setCategories(data.data));
+      departmentsApi.list().then(({ data }) => setDepartments(data.data));
     }
     prioritiesApi.list().then(({ data }) => setPriorities(data.data));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  useEffect(() => {
+    setCustomIssueDraft(ticket?.customIssueText || "");
+  }, [ticket?.id, ticket?.customIssueText]);
 
   const applyUpdate = async (payload) => {
     try {
@@ -73,10 +80,11 @@ export default function TicketDetailPage() {
     }
   };
 
-  const handleAddComment = async (payload) => {
+  const handleAddComment = async (payload, file) => {
     setCommentSubmitting(true);
     try {
-      await ticketsApi.addComment(id, payload);
+      const { data } = await ticketsApi.addComment(id, payload);
+      if (file) await ticketsApi.uploadAttachment(id, file, data.data.id);
       await load();
       enqueueSnackbar("Reply posted", { variant: "success" });
     } catch (err) {
@@ -86,23 +94,11 @@ export default function TicketDetailPage() {
     }
   };
 
-  const handleUpload = async (file) => {
-    setUploading(true);
-    try {
-      await ticketsApi.uploadAttachment(id, file);
-      await load();
-      enqueueSnackbar("File uploaded", { variant: "success" });
-    } catch (err) {
-      enqueueSnackbar(err.response?.data?.message || "Upload failed", { variant: "error" });
-    } finally {
-      setUploading(false);
-    }
-  };
-
   if (loading || !ticket) return <LoadingState minHeight={400} />;
 
   const canReopen = isOwner && !isStaff && ["RESOLVED", "CLOSED"].includes(ticket.status);
   const flatCategories = categories.flatMap((c) => [c, ...c.children]);
+  const selectedDeptForEdit = departments.find((d) => d.id === ticket.toDepartment?.id);
 
   return (
     <Box>
@@ -127,7 +123,7 @@ export default function TicketDetailPage() {
               <SafeHtml html={ticket.description} />
             </Paper>
 
-            <AttachmentList attachments={ticket.attachments} onUpload={handleUpload} uploading={uploading} />
+            <AttachmentList attachments={ticket.attachments} />
 
             <CommentThread
               comments={ticket.comments}
@@ -166,6 +162,8 @@ export default function TicketDetailPage() {
                     label="Assignee"
                     value={ticket.assignee?.id || ""}
                     onChange={(e) => applyUpdate({ assigneeId: e.target.value || null })}
+                    SelectProps={{ displayEmpty: true }}
+                    InputLabelProps={{ shrink: true }}
                   >
                     <MenuItem value="">Unassigned</MenuItem>
                     {agents.map((a) => <MenuItem key={a.id} value={a.id}>{a.name}</MenuItem>)}
@@ -177,6 +175,8 @@ export default function TicketDetailPage() {
                     label="Team"
                     value={ticket.team?.id || ""}
                     onChange={(e) => applyUpdate({ teamId: e.target.value || null })}
+                    SelectProps={{ displayEmpty: true }}
+                    InputLabelProps={{ shrink: true }}
                   >
                     <MenuItem value="">No team</MenuItem>
                     {teams.map((t) => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
@@ -198,6 +198,8 @@ export default function TicketDetailPage() {
                     label="Category"
                     value={ticket.category?.id || ""}
                     onChange={(e) => applyUpdate({ categoryId: e.target.value })}
+                    SelectProps={{ displayEmpty: true }}
+                    InputLabelProps={{ shrink: true }}
                   >
                     <MenuItem value="">No category</MenuItem>
                     {flatCategories.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
@@ -212,17 +214,77 @@ export default function TicketDetailPage() {
                 </>
               )}
 
-              {(ticket.fromDepartment || ticket.toDepartment) && (
+              {(ticket.fromDepartment || ticket.toDepartment || isStaff) && (
                 <>
                   <Divider />
                   {ticket.fromDepartment && <InfoRow label="From Department" value={ticket.fromDepartment.name} />}
-                  {ticket.toDepartment && <InfoRow label="To Department" value={ticket.toDepartment.name} />}
-                  {ticket.manager && <InfoRow label="Manager" value={ticket.manager.name} />}
-                  {ticket.issue && (
-                    <InfoRow
-                      label="Issue"
-                      value={ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name}
-                    />
+
+                  {isStaff ? (
+                    <>
+                      <TextField
+                        select
+                        size="small"
+                        label="Department"
+                        value={ticket.toDepartment?.id || ""}
+                        onChange={(e) => applyUpdate({ toDepartmentId: e.target.value || null, managerId: null, issueId: null })}
+                        SelectProps={{ displayEmpty: true }}
+                        InputLabelProps={{ shrink: true }}
+                      >
+                        <MenuItem value="">No department</MenuItem>
+                        {departments.map((d) => <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>)}
+                      </TextField>
+
+                      <TextField
+                        select
+                        size="small"
+                        label="Manager"
+                        value={ticket.manager?.id || ""}
+                        disabled={!ticket.toDepartment}
+                        onChange={(e) => applyUpdate({ managerId: e.target.value || null })}
+                        SelectProps={{ displayEmpty: true }}
+                        InputLabelProps={{ shrink: true }}
+                      >
+                        <MenuItem value="">Unassigned</MenuItem>
+                        {(selectedDeptForEdit?.managers || []).map((m) => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}
+                      </TextField>
+
+                      <TextField
+                        select
+                        size="small"
+                        label="Issue"
+                        value={ticket.issue?.id || ""}
+                        disabled={!ticket.toDepartment}
+                        onChange={(e) => applyUpdate({ issueId: e.target.value || null })}
+                        SelectProps={{ displayEmpty: true }}
+                        InputLabelProps={{ shrink: true }}
+                      >
+                        <MenuItem value="">No issue</MenuItem>
+                        {(selectedDeptForEdit?.issues || []).map((i) => <MenuItem key={i.id} value={i.id}>{i.name}</MenuItem>)}
+                      </TextField>
+
+                      {ticket.issue?.isOther && (
+                        <TextField
+                          size="small"
+                          label="Specify issue"
+                          value={customIssueDraft}
+                          onChange={(e) => setCustomIssueDraft(e.target.value)}
+                          onBlur={() => {
+                            if (customIssueDraft !== (ticket.customIssueText || "")) applyUpdate({ customIssueText: customIssueDraft });
+                          }}
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {ticket.toDepartment && <InfoRow label="To Department" value={ticket.toDepartment.name} />}
+                      {ticket.manager && <InfoRow label="Manager" value={ticket.manager.name} />}
+                      {ticket.issue && (
+                        <InfoRow
+                          label="Issue"
+                          value={ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name}
+                        />
+                      )}
+                    </>
                   )}
                 </>
               )}

@@ -92,6 +92,7 @@ async function listTickets(user, query) {
       query.categoryId ? { categoryId: query.categoryId } : {},
       query.assigneeId ? { assigneeId: query.assigneeId } : {},
       query.teamId ? { teamId: query.teamId } : {},
+      query.assigned === "true" ? { assigneeId: { not: null } } : {},
       query.overdue === "true" ? { dueAt: { lt: new Date() }, status: { notIn: ["RESOLVED", "CLOSED"] } } : {},
       query.dateFrom ? { createdAt: { gte: new Date(query.dateFrom) } } : {},
       query.dateTo ? { createdAt: { lte: new Date(query.dateTo) } } : {},
@@ -291,6 +292,21 @@ async function updateTicket(user, id, payload) {
     if (payload.categoryId !== undefined && payload.categoryId !== ticket.categoryId) {
       data.categoryId = payload.categoryId;
       historyEntries.push({ action: "CATEGORY_CHANGE", fieldName: "categoryId", oldValue: ticket.categoryId, newValue: payload.categoryId });
+    }
+    if (payload.toDepartmentId !== undefined && payload.toDepartmentId !== ticket.toDepartmentId) {
+      data.toDepartmentId = payload.toDepartmentId || null;
+      historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartmentId, newValue: payload.toDepartmentId });
+    }
+    if (payload.managerId !== undefined && payload.managerId !== ticket.managerId) {
+      data.managerId = payload.managerId || null;
+      historyEntries.push({ action: "MANAGER_CHANGE", fieldName: "managerId", oldValue: ticket.managerId, newValue: payload.managerId });
+    }
+    if (payload.issueId !== undefined && payload.issueId !== ticket.issueId) {
+      data.issueId = payload.issueId || null;
+      historyEntries.push({ action: "ISSUE_CHANGE", fieldName: "issueId", oldValue: ticket.issueId, newValue: payload.issueId });
+    }
+    if (payload.customIssueText !== undefined && payload.customIssueText !== ticket.customIssueText) {
+      data.customIssueText = payload.customIssueText || null;
     }
   }
 

@@ -9,6 +9,9 @@ const ACTION_LABELS = {
   TEAM_CHANGE: "Team changed",
   PRIORITY_CHANGE: "Priority changed",
   CATEGORY_CHANGE: "Category changed",
+  DEPARTMENT_CHANGE: "Department changed",
+  MANAGER_CHANGE: "Manager changed",
+  ISSUE_CHANGE: "Issue changed",
   COMMENTED: "Commented",
   BULK_UPDATE: "Bulk updated",
 };

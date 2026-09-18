@@ -10,5 +10,5 @@ const navItems = [
 ];
 
 export default function AgentLayout() {
-  return <AppShell navItems={navItems} title="Agent Workspace" />;
+  return <AppShell navItems={navItems} />;
 }

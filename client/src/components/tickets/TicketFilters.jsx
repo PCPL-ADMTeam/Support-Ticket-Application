@@ -1,20 +1,18 @@
 import { useEffect, useState } from "react";
 import { Paper, Stack, TextField, MenuItem, InputAdornment, Button } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
-import { categoriesApi, prioritiesApi } from "../../api/catalog";
+import { prioritiesApi } from "../../api/catalog";
 import { usersApi } from "../../api/users";
 
 const STATUS_OPTIONS = ["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"];
 
-// Search/status/priority/category/assignee/date-range filters for a ticket
-// list. `showAssignee` is only relevant to Admin/Agent views.
+// Search/status/priority/assignee/date-range filters for a ticket list.
+// `showAssignee` is only relevant to Admin/Agent views.
 export default function TicketFilters({ filters, onChange, showAssignee }) {
-  const [categories, setCategories] = useState([]);
   const [priorities, setPriorities] = useState([]);
   const [agents, setAgents] = useState([]);
 
   useEffect(() => {
-    categoriesApi.list().then(({ data }) => setCategories(data.data));
     prioritiesApi.list().then(({ data }) => setPriorities(data.data));
     if (showAssignee) usersApi.assignableAgents().then(({ data }) => setAgents(data.data));
   }, [showAssignee]);
@@ -39,10 +37,6 @@ export default function TicketFilters({ filters, onChange, showAssignee }) {
         <TextField size="small" select label="Priority" value={filters.priorityId || ""} onChange={set("priorityId")} sx={{ minWidth: 140 }}>
           <MenuItem value="">All</MenuItem>
           {priorities.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
-        </TextField>
-        <TextField size="small" select label="Category" value={filters.categoryId || ""} onChange={set("categoryId")} sx={{ minWidth: 160 }}>
-          <MenuItem value="">All</MenuItem>
-          {categories.flatMap((c) => [c, ...c.children]).map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
         </TextField>
         {showAssignee && (
           <TextField size="small" select label="Assignee" value={filters.assigneeId || ""} onChange={set("assigneeId")} sx={{ minWidth: 160 }}>

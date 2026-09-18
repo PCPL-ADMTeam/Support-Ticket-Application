@@ -30,11 +30,13 @@ import EmptyState from "../components/common/EmptyState";
 import PaginationBar from "../components/common/PaginationBar";
 import TicketFilters from "../components/tickets/TicketFilters";
 
+const EMPTY_FILTERS = {};
+
 // Shared ticket list, reused across all three portals. Row-level access is
 // already enforced by the API (ticket.service.js#scopeWhereForUser) — an
 // End User can only ever receive their own tickets here regardless of what
 // filters are applied.
-export default function TicketsListPage({ title, newTicketPath, showAssignee, showBulkActions }) {
+export default function TicketsListPage({ title, newTicketPath, showAssignee, showBulkActions, hideHeading = false, additionalFilters = EMPTY_FILTERS }) {
   const [searchParams] = useSearchParams();
 
   const [filters, setFilters] = useState({
@@ -44,6 +46,7 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
     sortOrder: "desc",
     status: searchParams.get("status") || "",
     overdue: searchParams.get("overdue") || "",
+    search: searchParams.get("search") || "",
   });
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -59,15 +62,22 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
 
   const load = useCallback(async () => {
     setLoading(true);
-    const params = Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== "" && v !== undefined));
+    const params = Object.fromEntries(
+      Object.entries({ ...filters, ...additionalFilters }).filter(([, v]) => v !== "" && v !== undefined),
+    );
     const { data } = await ticketsApi.list(params);
     setResult(data);
     setLoading(false);
-  }, [filters]);
+  }, [filters, additionalFilters]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const search = searchParams.get("search") || "";
+    setFilters((current) => (current.search === search ? current : { ...current, search, page: 1 }));
+  }, [searchParams]);
 
   const handleSort = (field) => {
     setFilters((f) => ({
@@ -95,14 +105,16 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
 
   return (
     <Box>
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2, flexWrap: "wrap", gap: 1 }}>
-        <Typography variant="h4">{title}</Typography>
-        {newTicketPath && (
-          <Button variant="contained" startIcon={<AddIcon />} component={RouterLink} to={newTicketPath}>
-            Raise a Ticket
-          </Button>
-        )}
-      </Box>
+      {!hideHeading && (
+        <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2, flexWrap: "wrap", gap: 1 }}>
+          <Typography variant="h4">{title}</Typography>
+          {newTicketPath && (
+            <Button variant="contained" startIcon={<AddIcon />} component={RouterLink} to={newTicketPath}>
+              Raise a Ticket
+            </Button>
+          )}
+        </Box>
+      )}
 
       <TicketFilters filters={filters} onChange={setFilters} showAssignee={showAssignee} />
 
