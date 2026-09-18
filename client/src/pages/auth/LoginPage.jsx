@@ -31,10 +31,12 @@ export default function LoginPage() {
   };
 
   return (
-    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "background.default", p: 2 }}>
-      <Paper variant="outlined" sx={{ p: 4, width: 400, maxWidth: "100%" }}>
+    <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: "background.default", p: 2, backgroundImage: "radial-gradient(circle at 15% 20%, #ffe1e3 0, transparent 28%), radial-gradient(circle at 85% 80%, #f8dadd 0, transparent 24%)" }}>
+      <Paper variant="outlined" sx={{ p: { xs: 3, sm: 4 }, width: 420, maxWidth: "100%", borderRadius: 4, boxShadow: "0 20px 50px rgba(102, 23, 31, 0.12)" }}>
         <Stack alignItems="center" spacing={1} sx={{ mb: 3 }}>
-          <SupportAgentIcon color="primary" sx={{ fontSize: 40 }} />
+          <Box sx={{ width: 64, height: 64, display: "grid", placeItems: "center", borderRadius: 3, bgcolor: "primary.main", color: "primary.contrastText", boxShadow: "0 10px 24px rgba(200, 30, 42, 0.25)", mb: 1 }}>
+            <SupportAgentIcon sx={{ fontSize: 36 }} />
+          </Box>
           <Typography variant="h5" fontWeight={700}>Helpdesk Sign In</Typography>
           <Typography variant="body2" color="text.secondary">IT Ticketing & Support System</Typography>
         </Stack>
@@ -45,7 +47,7 @@ export default function LoginPage() {
           <Stack spacing={2}>
             <TextField label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required fullWidth autoFocus />
             <TextField label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required fullWidth />
-            <Button type="submit" variant="contained" size="large" disabled={submitting}>
+            <Button type="submit" variant="contained" size="large" disabled={submitting} fullWidth>
               {submitting ? "Signing in..." : "Sign In"}
             </Button>
           </Stack>

@@ -12,6 +12,10 @@ const ticketListInclude = {
   requester: { select: { id: true, name: true, email: true } },
   assignee: { select: { id: true, name: true, email: true } },
   team: { select: { id: true, name: true } },
+  fromDepartment: { select: { id: true, name: true } },
+  toDepartment: { select: { id: true, name: true } },
+  manager: { select: { id: true, name: true, email: true } },
+  issue: { select: { id: true, name: true, isOther: true } },
 };
 
 const ticketDetailInclude = {
@@ -121,15 +125,33 @@ async function getTicketById(user, id) {
   return scrubInternalComments(ticket, user);
 }
 
-async function createTicket(user, payload) {
-  const { title, description, categoryId, priorityId, teamId, assigneeId } = payload;
+async function createTicket(user, payload, files = []) {
+  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, managerId, issueId, customIssueText } = payload;
 
-  const [category, priority] = await Promise.all([
-    prisma.category.findUnique({ where: { id: categoryId } }),
+  const fromDepartmentId = user.departmentId;
+  if (!fromDepartmentId) {
+    throw new ApiError(400, "Your account has no department assigned. Contact an administrator.");
+  }
+
+  const [priority, category, toDepartment, manager, issue] = await Promise.all([
     prisma.priority.findUnique({ where: { id: priorityId } }),
+    categoryId ? prisma.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
+    prisma.department.findUnique({ where: { id: toDepartmentId } }),
+    prisma.user.findUnique({ where: { id: managerId } }),
+    prisma.issue.findUnique({ where: { id: issueId } }),
   ]);
-  if (!category) throw new ApiError(400, "Invalid category");
   if (!priority) throw new ApiError(400, "Invalid priority");
+  if (categoryId && !category) throw new ApiError(400, "Invalid category");
+  if (!toDepartment) throw new ApiError(400, "Invalid department");
+  if (!manager || !manager.isManager || manager.departmentId !== toDepartmentId) {
+    throw new ApiError(400, "Invalid manager for this department");
+  }
+  if (!issue || !issue.isActive || issue.departmentId !== toDepartmentId) {
+    throw new ApiError(400, "Invalid issue for this department");
+  }
+  if (issue.isOther && !customIssueText?.trim()) {
+    throw new ApiError(400, "Please describe the custom issue");
+  }
 
   const dueAt = await computeDueAt(priorityId);
 
@@ -139,14 +161,32 @@ async function createTicket(user, payload) {
         ticketNumber: `PENDING-${Date.now()}`, // replaced below once `seq` is known
         title,
         description: sanitizeRichText(description),
-        categoryId,
+        categoryId: categoryId || null,
         priorityId,
         requesterId: user.id,
         assigneeId: assigneeId || null,
         teamId: teamId || null,
+        fromDepartmentId,
+        toDepartmentId,
+        managerId,
+        issueId,
+        customIssueText: issue.isOther ? customIssueText.trim() : null,
         dueAt,
       },
     });
+
+    for (const file of files) {
+      await tx.ticketAttachment.create({
+        data: {
+          ticketId: created.id,
+          uploadedById: user.id,
+          fileName: file.originalname,
+          filePath: file.filename,
+          fileSize: file.size,
+          mimeType: file.mimetype,
+        },
+      });
+    }
 
     const withNumber = await tx.ticket.update({
       where: { id: created.id },
@@ -165,6 +205,15 @@ async function createTicket(user, payload) {
     title: `Ticket ${ticket.ticketNumber} created`,
     message: `Your ticket "${ticket.title}" has been received and is now Open.`,
     email: user.email,
+  });
+
+  await notificationService.notify({
+    userId: manager.id,
+    ticketId: ticket.id,
+    type: "TICKET_CREATED",
+    title: `New ticket ${ticket.ticketNumber} for ${toDepartment.name}`,
+    message: `"${ticket.title}" was raised for ${toDepartment.name} and routed to you.`,
+    email: manager.email,
   });
 
   if (ticket.assigneeId) {

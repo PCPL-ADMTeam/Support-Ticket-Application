@@ -1,9 +1,7 @@
-import { useMemo, useState } from "react";
-
+import { useEffect, useMemo, useState } from "react";
 import {
   Stack,
   TextField,
-  MenuItem,
   Button,
   Typography,
   Box,
@@ -11,776 +9,1000 @@ import {
   Chip,
   Paper,
   Divider,
+  Alert,
 } from "@mui/material";
 
 import AttachFileIcon from "@mui/icons-material/AttachFile";
+import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import CloseIcon from "@mui/icons-material/Close";
+import FlagIcon from "@mui/icons-material/Flag";
 
+import ReactQuill from "react-quill";
+import "react-quill/dist/quill.snow.css";
 
 import { useAuth } from "../../context/AuthContext";
+import { departmentsApi } from "../../api/departments";
+import { prioritiesApi } from "../../api/catalog";
 
+const MAX_ATTACHMENT_MB = 10;
 
-// ======================================================
-// DEPARTMENT CONFIGURATION
-// Replace this later with your department API.
-// ======================================================
+const ALLOWED_ATTACHMENT_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/jpg",
+];
 
-const DEPARTMENT_DATA = {
-  IT: {
-    label: "IT",
-    managers: [
-      "IT Manager",
-      "Infrastructure Manager",
-      "Application Manager",
-    ],
-    issues: [
-      "Laptop / Desktop Issue",
-      "Network Issue",
-      "Internet Connectivity",
-      "Software Installation",
-      "Application Access",
-      "Email / Outlook Issue",
-      "VPN Issue",
-      "Password Reset",
-      "System Performance",
-      "Printer Issue",
-      "Others",
-    ],
-  },
+/* =========================================================
+   QUILL TOOLBAR
+========================================================= */
 
-  HR: {
-    label: "HR",
-    managers: [
-      "HR Manager",
-      "HR Operations Manager",
-    ],
-    issues: [
-      "Leave Issue",
-      "Attendance Issue",
-      "Payroll Issue",
-      "Employee Information Update",
-      "Onboarding Issue",
-      "Offboarding Issue",
-      "Policy Clarification",
-      "Document Request",
-      "Others",
-    ],
-  },
-
-  FINANCE: {
-    label: "Finance",
-    managers: [
-      "Finance Manager",
-      "Accounts Manager",
-    ],
-    issues: [
-      "Invoice Issue",
-      "Payment Issue",
-      "Expense Claim",
-      "Purchase Request",
-      "Billing Issue",
-      "Budget Request",
-      "Others",
-    ],
-  },
-
-  ADMIN: {
-    label: "Administration",
-    managers: [
-      "Admin Manager",
-      "Facilities Manager",
-    ],
-    issues: [
-      "Facility Issue",
-      "Office Equipment",
-      "Access Card",
-      "Transport Issue",
-      "Housekeeping Issue",
-      "Maintenance Issue",
-      "Others",
-    ],
-  },
-
-  SALES: {
-    label: "Sales",
-    managers: [
-      "Sales Manager",
-      "Sales Operations Manager",
-    ],
-    issues: [
-      "CRM Issue",
-      "Customer Data Issue",
-      "Sales Application Access",
-      "Report Issue",
-      "Customer Support Issue",
-      "Others",
-    ],
-  },
+const quillModules = {
+  toolbar: [
+    [{ font: [] }],
+    [{ size: ["small", false, "large", "huge"] }],
+    ["bold", "italic", "underline", "strike"],
+    [{ color: [] }, { background: [] }],
+    [{ script: "sub" }, { script: "super" }],
+    [{ header: [1, 2, 3, 4, 5, 6, false] }],
+    [{ align: [] }],
+    [{ list: "ordered" }, { list: "bullet" }],
+    [{ indent: "-1" }, { indent: "+1" }],
+    ["blockquote", "code-block"],
+    ["link"],
+    ["clean"],
+  ],
 };
 
+const quillFormats = [
+  "font",
+  "size",
+  "bold",
+  "italic",
+  "underline",
+  "strike",
+  "color",
+  "background",
+  "script",
+  "header",
+  "align",
+  "list",
+  "indent",
+  "blockquote",
+  "code-block",
+  "link",
+];
 
+const fieldLabelSx = {
+  fontSize: 14,
+  fontWeight: 600,
+  color: "text.primary",
+  mb: 1,
+};
 
+const sectionTitleSx = {
+  fontSize: 16,
+  fontWeight: 700,
+  color: "text.primary",
+  mb: 0.5,
+};
 
+const sectionSubtitleSx = {
+  fontSize: 13,
+  color: "text.secondary",
+};
 
-// ======================================================
-// COMPONENT
-// ======================================================
+/* =========================================================
+   COMPONENT
+========================================================= */
 
 export default function TicketForm({
   onSubmit,
-  submitting,
+  submitting = false,
 }) {
   const { user } = useAuth();
 
-  // ----------------------------------------------------
-  // Current user's department
-  // ----------------------------------------------------
+  const [departments, setDepartments] = useState([]);
+  const [priorities, setPriorities] = useState([]);
+  const [loadingOptions, setLoadingOptions] = useState(true);
 
-  const currentUserDepartment =
-    user?.department?.name ||
-    user?.department ||
-    "";
-
-  // ----------------------------------------------------
-  // Form state
-  // ----------------------------------------------------
+  useEffect(() => {
+    Promise.all([
+      departmentsApi.list(),
+      prioritiesApi.list(),
+    ])
+      .then(([deptRes, priorityRes]) => {
+        setDepartments(deptRes.data.data);
+        setPriorities(priorityRes.data.data);
+      })
+      .finally(() => {
+        setLoadingOptions(false);
+      });
+  }, []);
 
   const [form, setForm] = useState({
-    title: "",
-
-    fromDepartment:
-      currentUserDepartment,
-
-    toDepartment: "",
-
-    manager: "",
-
-    issue: "",
-
-    customIssue: "",
-
+    priorityId: "",
+    toDepartmentId: "",
+    managerId: "",
+    issueId: "",
+    customIssueText: "",
     description: "",
-
   });
 
-  // ----------------------------------------------------
-  // Attachment state
-  // ----------------------------------------------------
-
   const [attachments, setAttachments] = useState([]);
-
-  // ----------------------------------------------------
-  // Validation errors
-  // ----------------------------------------------------
-
   const [errors, setErrors] = useState({});
 
+  /* =========================================================
+     SELECTED VALUES
+  ========================================================= */
 
-  // ====================================================
-  // SELECTED DEPARTMENT
-  // ====================================================
+  const selectedDepartment = useMemo(
+    () =>
+      departments.find(
+        (d) => d.id === form.toDepartmentId
+      ) || null,
+    [departments, form.toDepartmentId]
+  );
 
-  const selectedDepartment = useMemo(() => {
-    return DEPARTMENT_DATA[form.toDepartment] || null;
-  }, [form.toDepartment]);
+  const selectedManager = useMemo(
+    () =>
+      selectedDepartment?.managers.find(
+        (m) => m.id === form.managerId
+      ) || null,
+    [selectedDepartment, form.managerId]
+  );
 
+  const selectedIssue = useMemo(
+    () =>
+      selectedDepartment?.issues.find(
+        (i) => i.id === form.issueId
+      ) || null,
+    [selectedDepartment, form.issueId]
+  );
 
-  // ====================================================
-  // HANDLE FIELD CHANGE
-  // ====================================================
+  const selectedPriority = useMemo(
+    () =>
+      priorities.find(
+        (p) => p.id === form.priorityId
+      ) || null,
+    [priorities, form.priorityId]
+  );
 
-  const handleChange = (field) => (event) => {
-    const value = event.target.value;
+  /* =========================================================
+     NORMAL FIELD CHANGE
+  ========================================================= */
 
-    setForm((previous) => ({
-      ...previous,
-      [field]: value,
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+
+    setForm((prev) => ({
+      ...prev,
+      [name]: value,
     }));
 
-    // Clear error when user starts editing
-    setErrors((previous) => ({
-      ...previous,
-      [field]: "",
+    setErrors((prev) => ({
+      ...prev,
+      [name]: "",
     }));
   };
 
-
-  // ====================================================
-  // DEPARTMENT CHANGE
-  // ====================================================
+  /* =========================================================
+     DEPARTMENT CHANGE
+  ========================================================= */
 
   const handleDepartmentChange = (_, value) => {
-    const departmentKey = value
-      ? Object.keys(DEPARTMENT_DATA).find(
-          (key) =>
-            DEPARTMENT_DATA[key].label === value
-        )
-      : "";
-
-    setForm((previous) => ({
-      ...previous,
-
-      toDepartment: departmentKey,
-
-      // Reset dependent fields
-      manager: "",
-      issue: "",
-      customIssue: "",
+    setForm((prev) => ({
+      ...prev,
+      toDepartmentId: value?.id || "",
+      managerId: "",
+      issueId: "",
+      customIssueText: "",
     }));
 
-    setErrors((previous) => ({
-      ...previous,
-      toDepartment: "",
-      manager: "",
-      issue: "",
-      customIssue: "",
+    setErrors((prev) => ({
+      ...prev,
+      toDepartmentId: "",
+      managerId: "",
+      issueId: "",
+      customIssueText: "",
     }));
   };
 
-
-  // ====================================================
-  // ISSUE CHANGE
-  // ====================================================
+  /* =========================================================
+     ISSUE CHANGE
+  ========================================================= */
 
   const handleIssueChange = (_, value) => {
-    setForm((previous) => ({
-      ...previous,
-      issue: value || "",
-      customIssue:
-        value === "Others"
-          ? previous.customIssue
-          : "",
+    setForm((prev) => ({
+      ...prev,
+      issueId: value?.id || "",
+      customIssueText: value?.isOther
+        ? prev.customIssueText
+        : "",
     }));
 
-    setErrors((previous) => ({
-      ...previous,
-      issue: "",
-      customIssue: "",
+    setErrors((prev) => ({
+      ...prev,
+      issueId: "",
+      customIssueText: "",
     }));
   };
 
+  /* =========================================================
+     DESCRIPTION CHANGE
+  ========================================================= */
 
-  // ====================================================
-  // ATTACHMENT UPLOAD
-  // ====================================================
+  const handleDescriptionChange = (value) => {
+    setForm((prev) => ({
+      ...prev,
+      description: value,
+    }));
+
+    setErrors((prev) => ({
+      ...prev,
+      description: "",
+    }));
+  };
+
+  /* =========================================================
+     ATTACHMENT
+  ========================================================= */
 
   const handleAttachmentChange = (event) => {
-    const files = Array.from(
-      event.target.files || []
-    );
+    const files = Array.from(event.target.files || []);
 
-    const allowedTypes = [
-      "application/pdf",
-      "image/jpeg",
-      "image/png",
-      "image/jpg",
-    ];
+    if (!files.length) return;
 
-    const validFiles = files.filter((file) =>
-      allowedTypes.includes(file.type)
-    );
+    const validFiles = [];
+    let rejectionMessage = "";
 
-    setAttachments((previous) => [
-      ...previous,
+    for (const file of files) {
+      if (!ALLOWED_ATTACHMENT_TYPES.includes(file.type)) {
+        rejectionMessage =
+          "Only PDF and image files (JPG/PNG) are supported.";
+        continue;
+      }
+
+      if (
+        file.size >
+        MAX_ATTACHMENT_MB * 1024 * 1024
+      ) {
+        rejectionMessage = `Files must be under ${MAX_ATTACHMENT_MB} MB.`;
+        continue;
+      }
+
+      validFiles.push(file);
+    }
+
+    setAttachments((prev) => [
+      ...prev,
       ...validFiles,
     ]);
 
-    // Reset input so same file can be selected again
+    setErrors((prev) => ({
+      ...prev,
+      attachments: rejectionMessage,
+    }));
+
     event.target.value = "";
   };
 
-
-  // ====================================================
-  // REMOVE ATTACHMENT
-  // ====================================================
-
   const removeAttachment = (index) => {
-    setAttachments((previous) =>
-      previous.filter(
+    setAttachments((prev) =>
+      prev.filter(
         (_, fileIndex) => fileIndex !== index
       )
     );
   };
 
+  /* =========================================================
+     VALIDATION
+  ========================================================= */
 
-  // ====================================================
-  // VALIDATION
-  // ====================================================
+  const validateForm = () => {
+    const newErrors = {};
 
-  const validate = () => {
-    const nextErrors = {};
-
-    if (!form.title.trim()) {
-      nextErrors.title = "Title is required";
+    if (!form.priorityId) {
+      newErrors.priorityId = "Priority is required";
     }
 
-    if (!form.fromDepartment) {
-      nextErrors.fromDepartment =
-        "From department is required";
+    if (!form.toDepartmentId) {
+      newErrors.toDepartmentId =
+        "Department is required";
     }
 
-    if (!form.toDepartment) {
-      nextErrors.toDepartment =
-        "Please select a department";
+    if (!form.managerId) {
+      newErrors.managerId =
+        "Manager is required";
     }
 
-    if (!form.manager) {
-      nextErrors.manager =
-        "Please select a manager";
-    }
-
-    if (!form.issue) {
-      nextErrors.issue =
-        "Please select an issue";
+    if (!form.issueId) {
+      newErrors.issueId = "Issue is required";
     }
 
     if (
-      form.issue === "Others" &&
-      !form.customIssue.trim()
+      selectedIssue?.isOther &&
+      !form.customIssueText.trim()
     ) {
-      nextErrors.customIssue =
-        "Please enter the custom issue";
+      newErrors.customIssueText =
+        "Please enter the issue";
     }
 
-    if (
-      !form.description.trim() ||
-      form.description === "<p><br></p>"
-    ) {
-      nextErrors.description =
+    const plainDescription = form.description
+      .replace(/<(.|\n)*?>/g, "")
+      .trim();
+
+    if (!plainDescription) {
+      newErrors.description =
         "Description is required";
     }
 
-    setErrors(nextErrors);
+    setErrors(newErrors);
 
-    return Object.keys(nextErrors).length === 0;
+    return Object.keys(newErrors).length === 0;
   };
 
+  /* =========================================================
+     SUBMIT
+  ========================================================= */
 
-  // ====================================================
-  // SUBMIT
-  // ====================================================
-
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
 
-    if (!validate()) {
-      return;
+    if (!validateForm()) return;
+
+    /*
+      TITLE IS NOW CREATED FROM ISSUE
+
+      Normal issue:
+      title = selectedIssue.name
+
+      Other issue:
+      title = customIssueText
+    */
+
+    const ticketTitle = selectedIssue?.isOther
+      ? form.customIssueText.trim()
+      : selectedIssue?.name || "";
+
+    const formData = new FormData();
+
+    formData.append("title", ticketTitle);
+    formData.append(
+      "description",
+      form.description
+    );
+    formData.append(
+      "priorityId",
+      form.priorityId
+    );
+    formData.append(
+      "toDepartmentId",
+      form.toDepartmentId
+    );
+    formData.append(
+      "managerId",
+      form.managerId
+    );
+    formData.append(
+      "issueId",
+      form.issueId
+    );
+
+    if (selectedIssue?.isOther) {
+      formData.append(
+        "customIssueText",
+        form.customIssueText.trim()
+      );
     }
 
-    const finalIssue =
-      form.issue === "Others"
-        ? form.customIssue
-        : form.issue;
-
-    onSubmit({
-      ...form,
-
-      issue: finalIssue,
-
-      attachments,
+    attachments.forEach((file) => {
+      formData.append("attachments", file);
     });
+
+    await onSubmit(formData);
   };
 
-
-  // ====================================================
-  // UI
-  // ====================================================
+  /* =========================================================
+     UI
+  ========================================================= */
 
   return (
-    <Box
-      component="form"
-      onSubmit={handleSubmit}
+    <Paper
+      elevation={0}
       sx={{
         width: "100%",
+        maxWidth: 900,
+        mx: "auto",
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 3,
+        overflow: "hidden",
+        backgroundColor: "#ffffff",
       }}
     >
-      <Stack spacing={3}>
+      {/* ===================================================
+          HEADER
+      =================================================== */}
 
-        {/* ============================================
-            TITLE
-            ============================================ */}
-
-        <TextField
-          label="Title"
-          placeholder="Enter a short title for your issue"
-          value={form.title}
-          onChange={handleChange("title")}
-          error={Boolean(errors.title)}
-          helperText={errors.title}
-          fullWidth
-          required
-        />
-
-
-        {/* ============================================
-            DEPARTMENTS
-            ============================================ */}
-
-        <Stack
-          direction={{
-            xs: "column",
-            md: "row",
+      <Box
+        sx={{
+          px: { xs: 3, md: 4 },
+          py: 3,
+          backgroundColor: "action.hover",
+          borderBottom: 1,
+          borderColor: "divider",
+        }}
+      >
+        <Typography
+          sx={{
+            fontSize: 22,
+            fontWeight: 700,
+            color: "text.primary",
           }}
-          spacing={2}
         >
+          Raise a Ticket
+        </Typography>
 
-          {/* FROM DEPARTMENT */}
-
-          <TextField
-            label="From Department"
-            value={form.fromDepartment}
-            onChange={handleChange(
-              "fromDepartment"
-            )}
-            error={Boolean(
-              errors.fromDepartment
-            )}
-            helperText={
-              errors.fromDepartment ||
-              "Your department"
-            }
-            fullWidth
-            InputProps={{
-              readOnly: true,
-            }}
-          />
-
-
-          {/* TO DEPARTMENT */}
-
-          <Autocomplete
-            fullWidth
-            options={Object.values(
-              DEPARTMENT_DATA
-            ).map((department) =>
-              department.label
-            )}
-            value={
-              form.toDepartment
-                ? DEPARTMENT_DATA[
-                    form.toDepartment
-                  ]?.label || null
-                : null
-            }
-            onChange={handleDepartmentChange}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="To Department"
-                placeholder="Select department"
-                required
-                error={Boolean(
-                  errors.toDepartment
-                )}
-                helperText={
-                  errors.toDepartment
-                }
-              />
-            )}
-          />
-
-        </Stack>
-
-
-        {/* ============================================
-            MANAGER
-            ============================================ */}
-
-        <Autocomplete
-          fullWidth
-          disabled={!selectedDepartment}
-          options={
-            selectedDepartment?.managers || []
-          }
-          value={
-            form.manager || null
-          }
-          onChange={(_, value) => {
-            setForm((previous) => ({
-              ...previous,
-              manager: value || "",
-            }));
-
-            setErrors((previous) => ({
-              ...previous,
-              manager: "",
-            }));
+        <Typography
+          sx={{
+            mt: 0.5,
+            fontSize: 14,
+            color: "text.secondary",
           }}
-          renderInput={(params) => (
-            <TextField
-              {...params}
-              label="Manager"
-              placeholder={
-                selectedDepartment
-                  ? "Select manager"
-                  : "Select department first"
-              }
-              required
-              error={Boolean(errors.manager)}
-              helperText={errors.manager}
-            />
-          )}
-        />
+        >
+          Provide the details below to create a
+          support ticket.
+        </Typography>
+      </Box>
 
+      {/* ===================================================
+          FORM
+      =================================================== */}
 
-        {/* ============================================
-            ISSUE
-            ============================================ */}
+      <Box
+        component="form"
+        onSubmit={handleSubmit}
+        sx={{
+          p: { xs: 3, md: 4 },
+        }}
+      >
+        <Stack spacing={3}>
+          {!user.department ? (
+            <Alert severity="warning">
+              Your account has no department assigned,
+              so you can't raise a ticket yet. Contact
+              an administrator to have one assigned to
+              you.
+            </Alert>
+          ) : (
+            <>
+              {/* =================================================
+                  TICKET DETAILS
+              ================================================= */}
 
-        <Autocomplete
-          fullWidth
-          disabled={!selectedDepartment}
-          options={
-            selectedDepartment?.issues || []
-          }
-          value={
-            form.issue || null
-          }
-          onChange={handleIssueChange}
-          renderInput={(params) => (
-            <TextField
-              {...params}
-              label="Issue"
-              placeholder={
-                selectedDepartment
-                  ? "Search or select an issue"
-                  : "Select department first"
-              }
-              required
-              error={Boolean(errors.issue)}
-              helperText={
-                errors.issue ||
-                "Search for a predefined issue"
-              }
-            />
-          )}
-        />
+              <Box>
+                <Typography sx={sectionTitleSx}>
+                  Ticket Details
+                </Typography>
 
+                <Typography
+                  sx={sectionSubtitleSx}
+                >
+                  Select the department, manager, issue
+                  and priority for your request.
+                </Typography>
+              </Box>
 
-        {/* ============================================
-            CUSTOM ISSUE
-            ============================================ */}
+              <Divider />
 
-        {form.issue === "Others" && (
-          <TextField
-            label="Custom Issue"
-            placeholder="Enter your issue"
-            value={form.customIssue}
-            onChange={handleChange(
-              "customIssue"
-            )}
-            error={Boolean(
-              errors.customIssue
-            )}
-            helperText={
-              errors.customIssue
-            }
-            fullWidth
-            required
-          />
-        )}
+              {/* =================================================
+                  PRIORITY
+              ================================================= */}
 
+              <Box>
+                <Typography sx={fieldLabelSx}>
+                  Priority
+                </Typography>
 
-        {/* ============================================
-            DESCRIPTION
-            ============================================ */}
+                <Autocomplete
+                  fullWidth
+                  size="small"
+                  loading={loadingOptions}
+                  options={priorities}
+                  getOptionLabel={(p) => p.name}
+                  value={selectedPriority}
+                  onChange={(_, value) => {
+                    setForm((prev) => ({
+                      ...prev,
+                      priorityId:
+                        value?.id || "",
+                    }));
 
-        <Box>
-
-          <Typography
-            variant="body2"
-            sx={{
-              mb: 1,
-              fontWeight: 500,
-            }}
-            color={
-              errors.description
-                ? "error"
-                : "text.secondary"
-            }
-          >
-            Description
-          </Typography>
-
-          <ReactQuill
-            theme="snow"
-            value={form.description}
-            onChange={(value) => {
-              setForm((previous) => ({
-                ...previous,
-                description: value,
-              }));
-
-              setErrors((previous) => ({
-                ...previous,
-                description: "",
-              }));
-            }}
-            modules={quillModules}
-            formats={quillFormats}
-            placeholder="Describe your issue in detail..."
-          />
-
-          {errors.description && (
-            <Typography
-              variant="caption"
-              color="error"
-              sx={{
-                mt: 0.5,
-                display: "block",
-              }}
-            >
-              {errors.description}
-            </Typography>
-          )}
-
-        </Box>
-
-
-        {/* ============================================
-            ATTACHMENTS
-            ============================================ */}
-
-        <Box>
-
-          <Typography
-            variant="body2"
-            sx={{
-              mb: 1,
-              fontWeight: 500,
-            }}
-          >
-            Attachment
-          </Typography>
-
-          <input
-            id="ticket-attachment"
-            type="file"
-            hidden
-            multiple
-            accept=".pdf,.jpg,.jpeg,.png"
-            onChange={
-              handleAttachmentChange
-            }
-          />
-
-          <label htmlFor="ticket-attachment">
-            <Button
-              component="span"
-              variant="outlined"
-              startIcon={
-                <AttachFileIcon />
-              }
-            >
-              Upload Files
-            </Button>
-          </label>
-
-          <Typography
-            variant="caption"
-            display="block"
-            color="text.secondary"
-            sx={{ mt: 0.5 }}
-          >
-            Supported formats: PDF, JPG,
-            JPEG, PNG
-          </Typography>
-
-
-          {/* Uploaded files */}
-
-          {attachments.length > 0 && (
-            <Paper
-              variant="outlined"
-              sx={{
-                mt: 2,
-                p: 1.5,
-              }}
-            >
-              <Stack spacing={1}>
-
-                {attachments.map(
-                  (file, index) => (
-                    <Box
-                      key={`${file.name}-${index}`}
-                      sx={{
-                        display: "flex",
-                        alignItems:
-                          "center",
-                        justifyContent:
-                          "space-between",
-                        gap: 1,
-                      }}
+                    setErrors((prev) => ({
+                      ...prev,
+                      priorityId: "",
+                    }));
+                  }}
+                  renderOption={(props, option) => (
+                    <li
+                      {...props}
+                      key={option.id}
                     >
-
-                      <Typography
-                        variant="body2"
-                        noWrap
+                      <Box
                         sx={{
-                          flex: 1,
+                          width: 10,
+                          height: 10,
+                          borderRadius: "50%",
+                          bgcolor: option.color,
+                          mr: 1.25,
+                          flexShrink: 0,
                         }}
-                      >
-                        {file.name}
-                      </Typography>
-
-                      <Chip
-                        label={`${(
-                          file.size / 1024
-                        ).toFixed(1)} KB`}
-                        size="small"
-                        variant="outlined"
-                        onDelete={() =>
-                          removeAttachment(
-                            index
-                          )
-                        }
-                        deleteIcon={
-                          <CloseIcon />
-                        }
                       />
 
-                    </Box>
-                  )
+                      {option.name}
+                    </li>
+                  )}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      placeholder="Select priority"
+                      error={Boolean(
+                        errors.priorityId
+                      )}
+                      helperText={
+                        errors.priorityId
+                      }
+                      InputProps={{
+                        ...params.InputProps,
+                        startAdornment: (
+                          <>
+                            <FlagIcon
+                              fontSize="small"
+                              sx={{
+                                color:
+                                  selectedPriority?.color ||
+                                  "text.disabled",
+                                mr: 0.5,
+                              }}
+                            />
+
+                            {
+                              params.InputProps
+                                .startAdornment
+                            }
+                          </>
+                        ),
+                      }}
+                    />
+                  )}
+                />
+              </Box>
+
+              {/* =================================================
+                  FROM / TO DEPARTMENT
+              ================================================= */}
+
+              <Stack
+                direction={{
+                  xs: "column",
+                  md: "row",
+                }}
+                spacing={2}
+              >
+                <Box sx={{ flex: 1 }}>
+                  <Typography
+                    sx={fieldLabelSx}
+                  >
+                    From Department
+                  </Typography>
+
+                  <TextField
+                    fullWidth
+                    value={user.department.name}
+                    helperText="Your department"
+                    size="small"
+                    InputProps={{
+                      readOnly: true,
+                    }}
+                  />
+                </Box>
+
+                <Box sx={{ flex: 1 }}>
+                  <Typography
+                    sx={fieldLabelSx}
+                  >
+                    Department
+                  </Typography>
+
+                  <Autocomplete
+                    fullWidth
+                    size="small"
+                    loading={loadingOptions}
+                    options={departments}
+                    getOptionLabel={(d) => d.name}
+                    value={selectedDepartment}
+                    onChange={
+                      handleDepartmentChange
+                    }
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        placeholder="Select department"
+                        error={Boolean(
+                          errors.toDepartmentId
+                        )}
+                        helperText={
+                          errors.toDepartmentId
+                        }
+                      />
+                    )}
+                  />
+                </Box>
+              </Stack>
+
+              {/* =================================================
+                  MANAGER
+              ================================================= */}
+
+              <Box>
+                <Typography sx={fieldLabelSx}>
+                  Manager
+                </Typography>
+
+                <Autocomplete
+                  fullWidth
+                  size="small"
+                  disabled={!selectedDepartment}
+                  options={
+                    selectedDepartment?.managers ||
+                    []
+                  }
+                  getOptionLabel={(m) => m.name}
+                  value={selectedManager}
+                  onChange={(_, value) => {
+                    setForm((prev) => ({
+                      ...prev,
+                      managerId:
+                        value?.id || "",
+                    }));
+
+                    setErrors((prev) => ({
+                      ...prev,
+                      managerId: "",
+                    }));
+                  }}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      placeholder={
+                        selectedDepartment
+                          ? "Select manager"
+                          : "Select department first"
+                      }
+                      error={Boolean(
+                        errors.managerId
+                      )}
+                      helperText={
+                        errors.managerId
+                      }
+                    />
+                  )}
+                />
+              </Box>
+
+              {/* =================================================
+                  ISSUE
+              ================================================= */}
+
+              <Box>
+                <Typography sx={fieldLabelSx}>
+                  Issue
+                </Typography>
+
+                <Autocomplete
+                  fullWidth
+                  size="small"
+                  disabled={!selectedDepartment}
+                  options={
+                    selectedDepartment?.issues ||
+                    []
+                  }
+                  getOptionLabel={(i) => i.name}
+                  value={selectedIssue}
+                  onChange={handleIssueChange}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      placeholder={
+                        selectedDepartment
+                          ? "Search or select an issue"
+                          : "Select department first"
+                      }
+                      error={Boolean(
+                        errors.issueId
+                      )}
+                      helperText={
+                        errors.issueId ||
+                        "Search for a predefined issue"
+                      }
+                    />
+                  )}
+                />
+              </Box>
+
+              {/* =================================================
+                  CUSTOM ISSUE
+              ================================================= */}
+
+              {selectedIssue?.isOther && (
+                <Box>
+                  <Typography
+                    sx={fieldLabelSx}
+                  >
+                    Specify Issue
+                  </Typography>
+
+                  <TextField
+                    fullWidth
+                    name="customIssueText"
+                    value={
+                      form.customIssueText
+                    }
+                    onChange={handleChange}
+                    placeholder="Enter the issue"
+                    error={Boolean(
+                      errors.customIssueText
+                    )}
+                    helperText={
+                      errors.customIssueText
+                    }
+                    size="small"
+                  />
+                </Box>
+              )}
+
+              {/* =================================================
+                  DESCRIPTION
+              ================================================= */}
+
+              <Box>
+                <Typography sx={fieldLabelSx}>
+                  Description
+                </Typography>
+
+                <Box
+                  sx={{
+                    "& .ql-toolbar": {
+                      border:
+                        "1px solid",
+                      borderBottom: "none",
+                      borderRadius:
+                        "6px 6px 0 0",
+                      backgroundColor:
+                        "action.hover",
+                    },
+
+                    "& .ql-container": {
+                      border:
+                        "1px solid",
+                      borderRadius:
+                        "0 0 6px 6px",
+                      minHeight: 170,
+                      fontSize: 14,
+                    },
+
+                    "& .ql-editor": {
+                      minHeight: 170,
+                    },
+
+                    "& .ql-editor.ql-blank::before":
+                      {
+                        color: "text.secondary",
+                        fontStyle: "normal",
+                      },
+
+                    ...(errors.description && {
+                      "& .ql-toolbar": {
+                        borderColor:
+                          "primary.main",
+                      },
+
+                      "& .ql-container": {
+                        borderColor:
+                          "primary.main",
+                      },
+                    }),
+                  }}
+                >
+                  <ReactQuill
+                    theme="snow"
+                    value={form.description}
+                    onChange={
+                      handleDescriptionChange
+                    }
+                    modules={quillModules}
+                    formats={quillFormats}
+                    placeholder="Describe your issue in detail..."
+                  />
+                </Box>
+
+                {errors.description && (
+                  <Typography
+                    sx={{
+                      color: "primary.main",
+                      fontSize: 12,
+                      mt: 0.5,
+                      ml: 1.5,
+                    }}
+                  >
+                    {errors.description}
+                  </Typography>
+                )}
+              </Box>
+
+              {/* =================================================
+                  ATTACHMENT
+              ================================================= */}
+
+              <Box>
+                <Typography sx={fieldLabelSx}>
+                  Attachment
+                </Typography>
+
+                <Button
+                  component="label"
+                  variant="outlined"
+                  startIcon={
+                    <AttachFileIcon />
+                  }
+                  sx={{
+                    textTransform: "none",
+                    borderRadius: 2,
+                    px: 2,
+                    py: 1,
+                  }}
+                >
+                  Upload File
+
+                  <input
+                    type="file"
+                    hidden
+                    multiple
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    onChange={
+                      handleAttachmentChange
+                    }
+                  />
+                </Button>
+
+                <Typography
+                  sx={{
+                    mt: 0.75,
+                    fontSize: 12,
+                    color: "text.secondary",
+                  }}
+                >
+                  PDF, JPG or PNG — up to{" "}
+                  {MAX_ATTACHMENT_MB} MB each
+                </Typography>
+
+                {errors.attachments && (
+                  <Typography
+                    sx={{
+                      color: "primary.main",
+                      fontSize: 12,
+                      mt: 0.5,
+                    }}
+                  >
+                    {errors.attachments}
+                  </Typography>
                 )}
 
-              </Stack>
-            </Paper>
+                {attachments.length > 0 && (
+                  <Stack
+                    spacing={1}
+                    sx={{ mt: 1.5 }}
+                  >
+                    {attachments.map(
+                      (file, index) => (
+                        <Paper
+                          key={`${file.name}-${index}`}
+                          variant="outlined"
+                          sx={{
+                            display: "flex",
+                            alignItems:
+                              "center",
+                            gap: 1.5,
+                            p: 1,
+                            px: 1.5,
+                            borderRadius: 2,
+                            borderColor:
+                              "divider",
+                          }}
+                        >
+                          <InsertDriveFileIcon
+                            fontSize="small"
+                            sx={{
+                              color:
+                                "text.secondary",
+                            }}
+                          />
+
+                          <Typography
+                            variant="body2"
+                            noWrap
+                            sx={{
+                              flex: 1,
+                            }}
+                          >
+                            {file.name}
+                          </Typography>
+
+                          <Chip
+                            label={`${(
+                              file.size / 1024
+                            ).toFixed(1)} KB`}
+                            size="small"
+                            variant="outlined"
+                            onDelete={() =>
+                              removeAttachment(
+                                index
+                              )
+                            }
+                            deleteIcon={
+                              <CloseIcon />
+                            }
+                            sx={{
+                              borderRadius: 1.5,
+                            }}
+                          />
+                        </Paper>
+                      )
+                    )}
+                  </Stack>
+                )}
+              </Box>
+
+              {/* =================================================
+                  ACTION BUTTON
+              ================================================= */}
+
+              <Divider />
+
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent:
+                    "flex-end",
+                  gap: 1.5,
+                }}
+              >
+                <Button
+                  type="submit"
+                  variant="contained"
+                  disabled={
+                    submitting ||
+                    loadingOptions
+                  }
+                  sx={{
+                    minWidth: 160,
+                    py: 1.2,
+                    borderRadius: 2,
+                    textTransform:
+                      "none",
+                    fontWeight: 600,
+                  }}
+                >
+                  {submitting
+                    ? "Submitting..."
+                    : "Raise a Ticket"}
+                </Button>
+              </Box>
+            </>
           )}
-
-        </Box>
-
-
-        <Divider />
-
-
-        {/* ============================================
-            RAISE TICKET BUTTON
-            ============================================ */}
-
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "flex-end",
-          }}
-        >
-          <Button
-            type="submit"
-            variant="contained"
-            size="large"
-            disabled={submitting}
-            sx={{
-              minWidth: 170,
-              fontWeight: 600,
-              textTransform: "none",
-            }}
-          >
-            {submitting
-              ? "Submitting..."
-              : "Raise a Ticket"}
-          </Button>
-        </Box>
-
-      </Stack>
-    </Box>
+        </Stack>
+      </Box>
+    </Paper>
   );
 }

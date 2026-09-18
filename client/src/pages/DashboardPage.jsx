@@ -54,10 +54,10 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
 
       <Grid container spacing={2}>
         <Grid item xs={6} sm={4} md={2}>
-          <KpiCard label="Total" value={kpis.total} color="#2a78d6" icon={<ConfirmationNumberIcon />} onClick={() => goToTickets({})} />
+          <KpiCard label="Total" value={kpis.total} color="#c81e2a" icon={<ConfirmationNumberIcon />} onClick={() => goToTickets({})} />
         </Grid>
         <Grid item xs={6} sm={4} md={2}>
-          <KpiCard label="Open" value={kpis.open} color="#2a78d6" icon={<PendingActionsIcon />} onClick={() => goToTickets({ status: "OPEN" })} />
+          <KpiCard label="Open" value={kpis.open} color="#c81e2a" icon={<PendingActionsIcon />} onClick={() => goToTickets({ status: "OPEN" })} />
         </Grid>
         <Grid item xs={6} sm={4} md={2}>
           <KpiCard label="In Progress" value={kpis.in_progress} color="#eb6834" icon={<HourglassBottomIcon />} onClick={() => goToTickets({ status: "IN_PROGRESS" })} />

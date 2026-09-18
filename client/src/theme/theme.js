@@ -20,27 +20,66 @@ export const statusColors = {
 };
 
 export function buildTheme(mode) {
+  const isDark = mode === "dark";
   return createTheme({
     palette: {
       mode,
-      primary: { main: "#1565C0" },
-      secondary: { main: "#00897B" },
+      primary: { main: "#c81e2a", dark: "#991b25", light: "#fbe3e5", contrastText: "#ffffff" },
+      secondary: { main: "#6b1f25", dark: "#461317", light: "#f7e8e9", contrastText: "#ffffff" },
+      error: { main: "#c81e2a" },
       background:
-        mode === "dark"
-          ? { default: "#0f1620", paper: "#161f2c" }
-          : { default: "#f4f6f8", paper: "#ffffff" },
+        isDark
+          ? { default: "#201518", paper: "#2a1b1f" }
+          : { default: "#fff7f7", paper: "#ffffff" },
+      divider: isDark ? "rgba(255, 221, 224, 0.14)" : "#f0d9dc",
+      text: isDark
+        ? { primary: "#fff7f7", secondary: "#e2c8cb" }
+        : { primary: "#2c1518", secondary: "#785a5e" },
     },
-    shape: { borderRadius: 10 },
+    shape: { borderRadius: 14 },
     typography: {
       fontFamily: ['"Inter"', '"Segoe UI"', "Roboto", "sans-serif"].join(","),
-      h4: { fontWeight: 700 },
-      h5: { fontWeight: 700 },
-      h6: { fontWeight: 600 },
+      h4: { fontWeight: 800, letterSpacing: "-0.03em" },
+      h5: { fontWeight: 800, letterSpacing: "-0.02em" },
+      h6: { fontWeight: 700, letterSpacing: "-0.01em" },
+      button: { fontWeight: 700, letterSpacing: "0.01em" },
     },
     components: {
-      MuiPaper: { styleOverrides: { root: { backgroundImage: "none" } } },
-      MuiButton: { styleOverrides: { root: { textTransform: "none", fontWeight: 600 } } },
-      MuiTableCell: { styleOverrides: { head: { fontWeight: 700 } } },
+      MuiCssBaseline: {
+        styleOverrides: {
+          body: {
+            backgroundImage: isDark
+              ? "radial-gradient(circle at 100% 0%, rgba(200, 30, 42, 0.18), transparent 30%)"
+              : "radial-gradient(circle at 100% 0%, #ffe9ea 0, transparent 32%)",
+          },
+          "::selection": { backgroundColor: "#f5b7bd", color: "#65121a" },
+        },
+      },
+      MuiPaper: {
+        styleOverrides: {
+          root: { backgroundImage: "none", borderColor: isDark ? "rgba(255, 221, 224, 0.14)" : "#f0d9dc" },
+        },
+      },
+      MuiButton: {
+        styleOverrides: {
+          root: { textTransform: "none", fontWeight: 700, borderRadius: 10, boxShadow: "none", paddingInline: 18 },
+          contained: { "&:hover": { boxShadow: "0 6px 16px rgba(153, 27, 37, 0.24)" } },
+        },
+      },
+      MuiOutlinedInput: {
+        styleOverrides: {
+          root: { borderRadius: 10, "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: "#c81e2a" } },
+        },
+      },
+      MuiTableCell: {
+        styleOverrides: {
+          head: { fontWeight: 800, color: isDark ? "#ffeef0" : "#65121a", backgroundColor: isDark ? "rgba(255,255,255,0.035)" : "#fff4f5" },
+          root: { borderColor: isDark ? "rgba(255, 221, 224, 0.12)" : "#f5e2e4" },
+        },
+      },
+      MuiChip: { styleOverrides: { root: { borderRadius: 8, fontWeight: 700 } } },
+      MuiDialog: { styleOverrides: { paper: { borderRadius: 18 } } },
+      MuiTooltip: { styleOverrides: { tooltip: { borderRadius: 8 } } },
     },
   });
 }

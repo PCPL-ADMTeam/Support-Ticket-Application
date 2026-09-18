@@ -22,7 +22,7 @@ import { prioritiesApi } from "../../api/catalog";
 import LoadingState from "../../components/common/LoadingState";
 import PriorityBadge from "../../components/common/PriorityBadge";
 
-const emptyForm = { name: "", level: "", color: "#2a78d6" };
+const emptyForm = { name: "", level: "", color: "#c81e2a" };
 
 // Response/resolution SLA minutes are edited inline per-row and saved with
 // PUT /priorities/:id/sla — this is the "SLA configuration per priority"

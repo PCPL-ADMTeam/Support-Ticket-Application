@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Box, Typography, Paper } from "@mui/material";
+import { Box } from "@mui/material";
 import { useSnackbar } from "notistack";
 import { ticketsApi } from "../../api/tickets";
 import TicketForm from "../../components/tickets/TicketForm";
+import TicketSuccessDialog from "../../components/tickets/TicketSuccessDialog";
 
 export default function NewTicketPage() {
   const [submitting, setSubmitting] = useState(false);
+  const [createdTicketId, setCreatedTicketId] = useState(null);
   const navigate = useNavigate();
   const { enqueueSnackbar } = useSnackbar();
 
@@ -14,8 +16,7 @@ export default function NewTicketPage() {
     setSubmitting(true);
     try {
       const { data } = await ticketsApi.create(payload);
-      enqueueSnackbar(`Ticket ${data.data.ticketNumber} created`, { variant: "success" });
-      navigate(`/tickets/${data.data.id}`);
+      setCreatedTicketId(data.data.id);
     } catch (err) {
       enqueueSnackbar(err.response?.data?.message || "Failed to create ticket", { variant: "error" });
     } finally {
@@ -23,12 +24,20 @@ export default function NewTicketPage() {
     }
   };
 
+  const closeSuccessDialog = () => {
+    setCreatedTicketId(null);
+    navigate("/portal");
+  };
+
   return (
-    <Box maxWidth={720}>
-      <Typography variant="h4" gutterBottom>Raise a Ticket</Typography>
-      <Paper variant="outlined" sx={{ p: 3 }}>
-        <TicketForm onSubmit={handleSubmit} submitting={submitting} />
-      </Paper>
+    <Box>
+      <TicketForm onSubmit={handleSubmit} submitting={submitting} />
+
+      <TicketSuccessDialog
+        open={Boolean(createdTicketId)}
+        onClose={closeSuccessDialog}
+        onViewTicket={() => navigate(`/tickets/${createdTicketId}`)}
+      />
     </Box>
   );
 }

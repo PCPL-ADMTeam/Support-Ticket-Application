@@ -19,6 +19,7 @@ import AllTicketsPage from "./pages/admin/AllTicketsPage";
 import UsersPage from "./pages/admin/UsersPage";
 import TeamsPage from "./pages/admin/TeamsPage";
 import CategoriesPage from "./pages/admin/CategoriesPage";
+import DepartmentsPage from "./pages/admin/DepartmentsPage";
 import SlaPage from "./pages/admin/SlaPage";
 import AuditLogsPage from "./pages/admin/AuditLogsPage";
 import SettingsPage from "./pages/admin/SettingsPage";
@@ -61,6 +62,7 @@ export default function App() {
                   <Route path="users" element={<UsersPage />} />
                   <Route path="teams" element={<TeamsPage />} />
                   <Route path="categories" element={<CategoriesPage />} />
+                  <Route path="departments" element={<DepartmentsPage />} />
                   <Route path="sla" element={<SlaPage />} />
                   <Route path="audit-logs" element={<AuditLogsPage />} />
                   <Route path="settings" element={<SettingsPage />} />

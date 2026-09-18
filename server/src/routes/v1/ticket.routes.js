@@ -16,7 +16,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get("/", listTicketsValidator, validate, ticketController.list);
-router.post("/", createTicketValidator, validate, ticketController.create);
+router.post("/", upload.array("attachments", 5), createTicketValidator, validate, ticketController.create);
 router.post("/bulk", requireRole("ADMIN"), bulkUpdateValidator, validate, ticketController.bulkUpdate);
 router.get("/:id", ticketController.getById);
 router.patch("/:id", updateTicketValidator, validate, ticketController.update);

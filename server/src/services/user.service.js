@@ -11,7 +11,10 @@ const userListSelect = {
   isActive: true,
   avatarUrl: true,
   createdAt: true,
+  departmentId: true,
+  isManager: true,
   role: { select: { id: true, name: true, label: true } },
+  department: { select: { id: true, name: true } },
   teamMemberships: { select: { team: { select: { id: true, name: true } } } },
 };
 
@@ -45,7 +48,7 @@ async function getUserById(id) {
 }
 
 async function createUser(actorId, payload) {
-  const { name, email, password, roleName, teamIds = [] } = payload;
+  const { name, email, password, roleName, teamIds = [], departmentId, isManager } = payload;
 
   const role = await prisma.role.findUnique({ where: { name: roleName } });
   if (!role) throw new ApiError(400, `Unknown role: ${roleName}`);
@@ -61,6 +64,8 @@ async function createUser(actorId, payload) {
       email: email.toLowerCase(),
       passwordHash,
       roleId: role.id,
+      departmentId: departmentId || null,
+      isManager: Boolean(isManager),
       teamMemberships: teamIds.length
         ? { create: teamIds.map((teamId) => ({ team: { connect: { id: teamId } } })) }
         : undefined,
@@ -79,6 +84,8 @@ async function updateUser(actorId, id, payload) {
   const data = {};
   if (payload.name !== undefined) data.name = payload.name;
   if (payload.isActive !== undefined) data.isActive = payload.isActive;
+  if (payload.departmentId !== undefined) data.departmentId = payload.departmentId || null;
+  if (payload.isManager !== undefined) data.isManager = payload.isManager;
   if (payload.roleName !== undefined) {
     const role = await prisma.role.findUnique({ where: { name: payload.roleName } });
     if (!role) throw new ApiError(400, `Unknown role: ${payload.roleName}`);

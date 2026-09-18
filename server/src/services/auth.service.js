@@ -41,7 +41,7 @@ async function issueTokenPair(user) {
 async function login(email, password) {
   const user = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
-    include: { role: true },
+    include: { role: true, department: true },
   });
 
   // Same error for "no such user" and "wrong password" — avoids leaking
@@ -72,7 +72,7 @@ async function refresh(token) {
     throw new ApiError(401, "Refresh token has been revoked or expired");
   }
 
-  const user = await prisma.user.findUnique({ where: { id: payload.sub }, include: { role: true } });
+  const user = await prisma.user.findUnique({ where: { id: payload.sub }, include: { role: true, department: true } });
   if (!user || !user.isActive) {
     throw new ApiError(401, "Account not found or deactivated");
   }

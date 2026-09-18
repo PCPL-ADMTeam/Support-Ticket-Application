@@ -3,8 +3,12 @@ const { body, param, query } = require("express-validator");
 const createTicketValidator = [
   body("title").trim().notEmpty().withMessage("Title is required").isLength({ max: 200 }),
   body("description").trim().notEmpty().withMessage("Description is required"),
-  body("categoryId").notEmpty().withMessage("Category is required"),
+  body("categoryId").optional({ nullable: true }).isString(),
   body("priorityId").notEmpty().withMessage("Priority is required"),
+  body("toDepartmentId").notEmpty().withMessage("Department is required"),
+  body("managerId").notEmpty().withMessage("Manager is required"),
+  body("issueId").notEmpty().withMessage("Issue is required"),
+  body("customIssueText").optional({ nullable: true }).isString(),
   body("assigneeId").optional({ nullable: true }).isString(),
   body("teamId").optional({ nullable: true }).isString(),
 ];

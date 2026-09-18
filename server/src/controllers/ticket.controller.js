@@ -10,7 +10,7 @@ async function getById(req, res) {
 }
 
 async function create(req, res) {
-  const ticket = await ticketService.createTicket(req.user, req.body);
+  const ticket = await ticketService.createTicket(req.user, req.body, req.files || []);
   res.status(201).json({ success: true, data: ticket });
 }
 

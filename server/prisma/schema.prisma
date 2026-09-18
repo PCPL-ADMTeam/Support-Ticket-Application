@@ -214,11 +214,17 @@ model Ticket {
   description  String       @db.Text
   status       TicketStatus @default(OPEN)
 
-  categoryId String
+  categoryId String?
   priorityId String
   requesterId String
   assigneeId  String?
   teamId      String?
+
+  fromDepartmentId String?
+  toDepartmentId   String?
+  managerId        String?
+  issueId          String?
+  customIssueText  String? @db.Text
 
   dueAt          DateTime? // resolution deadline derived from SLA
   firstResponseAt DateTime?
@@ -228,11 +234,16 @@ model Ticket {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  category  Category @relation(fields: [categoryId], references: [id])
+  category  Category? @relation(fields: [categoryId], references: [id])
   priority  Priority @relation(fields: [priorityId], references: [id])
   requester User     @relation("TicketRequester", fields: [requesterId], references: [id])
   assignee  User?    @relation("TicketAssignee", fields: [assigneeId], references: [id])
   team      Team?    @relation(fields: [teamId], references: [id])
+
+  fromDepartment Department? @relation("TicketFromDepartment", fields: [fromDepartmentId], references: [id])
+  toDepartment   Department? @relation("TicketToDepartment", fields: [toDepartmentId], references: [id])
+  manager        User?       @relation("TicketManager", fields: [managerId], references: [id])
+  issue          Issue?      @relation(fields: [issueId], references: [id])
 
   comments    TicketComment[]
   attachments TicketAttachment[]
@@ -246,6 +257,9 @@ model Ticket {
   @@index([categoryId])
   @@index([teamId])
   @@index([createdAt])
+  @@index([toDepartmentId])
+  @@index([managerId])
+  @@index([issueId])
   @@map("tickets")
 }
 

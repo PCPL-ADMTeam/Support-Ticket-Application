@@ -82,6 +82,7 @@ npm run dev                 # starts on http://localhost:5173
 | Agent | `sam.support@helpdesk.local` | `Agent@12345` |
 | End User | `jamie.user@helpdesk.local` | `User@12345` |
 | End User | `riley.requester@helpdesk.local` | `User@12345` |
+| Manager | `it.manager@helpdesk.local` (and one per department) | `Manager@12345` |
 
 Change `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` in `server/.env` before
 seeding a non-dev environment.

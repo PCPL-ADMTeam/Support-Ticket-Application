@@ -19,6 +19,8 @@ import {
   MenuItem,
   Stack,
   Autocomplete,
+  FormControlLabel,
+  Switch,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import BlockIcon from "@mui/icons-material/Block";
@@ -26,13 +28,14 @@ import AddIcon from "@mui/icons-material/Add";
 import { useSnackbar } from "notistack";
 import { usersApi } from "../../api/users";
 import { teamsApi } from "../../api/teams";
+import { departmentsApi } from "../../api/departments";
 import LoadingState from "../../components/common/LoadingState";
 import PaginationBar from "../../components/common/PaginationBar";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
 
 const ROLES = ["ADMIN", "AGENT", "USER"];
 
-const emptyForm = { id: null, name: "", email: "", password: "", roleName: "USER", teamIds: [] };
+const emptyForm = { id: null, name: "", email: "", password: "", roleName: "USER", teamIds: [], departmentId: "", isManager: false };
 
 export default function UsersPage() {
   const { enqueueSnackbar } = useSnackbar();
@@ -40,6 +43,7 @@ export default function UsersPage() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [teams, setTeams] = useState([]);
+  const [departments, setDepartments] = useState([]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -55,19 +59,30 @@ export default function UsersPage() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { teamsApi.list().then(({ data }) => setTeams(data.data)); }, []);
+  useEffect(() => { departmentsApi.list().then(({ data }) => setDepartments(data.data)); }, []);
 
   const openCreate = () => { setForm(emptyForm); setDialogOpen(true); };
   const openEdit = (u) => {
-    setForm({ id: u.id, name: u.name, email: u.email, password: "", roleName: u.role.name, teamIds: u.teamMemberships.map((m) => m.team.id) });
+    setForm({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      password: "",
+      roleName: u.role.name,
+      teamIds: u.teamMemberships.map((m) => m.team.id),
+      departmentId: u.departmentId || "",
+      isManager: u.isManager,
+    });
     setDialogOpen(true);
   };
 
   const handleSave = async () => {
     try {
+      const shared = { departmentId: form.departmentId || null, isManager: form.isManager };
       if (form.id) {
-        await usersApi.update(form.id, { name: form.name, roleName: form.roleName, teamIds: form.teamIds });
+        await usersApi.update(form.id, { name: form.name, roleName: form.roleName, teamIds: form.teamIds, ...shared });
       } else {
-        await usersApi.create({ name: form.name, email: form.email, password: form.password, roleName: form.roleName, teamIds: form.teamIds });
+        await usersApi.create({ name: form.name, email: form.email, password: form.password, roleName: form.roleName, teamIds: form.teamIds, ...shared });
       }
       setDialogOpen(false);
       load();
@@ -112,6 +127,7 @@ export default function UsersPage() {
                 <TableCell>Email</TableCell>
                 <TableCell>Role</TableCell>
                 <TableCell>Teams</TableCell>
+                <TableCell>Department</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -123,6 +139,10 @@ export default function UsersPage() {
                   <TableCell>{u.email}</TableCell>
                   <TableCell><Chip size="small" label={u.role.name} /></TableCell>
                   <TableCell>{u.teamMemberships.map((m) => m.team.name).join(", ") || "—"}</TableCell>
+                  <TableCell>
+                    {u.department?.name || "—"}
+                    {u.isManager && <Chip size="small" label="Manager" sx={{ ml: 0.5 }} />}
+                  </TableCell>
                   <TableCell>
                     <Chip size="small" label={u.isActive ? "Active" : "Inactive"} color={u.isActive ? "success" : "default"} />
                   </TableCell>
@@ -163,6 +183,21 @@ export default function UsersPage() {
               value={teams.filter((t) => form.teamIds.includes(t.id))}
               onChange={(_e, value) => setForm((f) => ({ ...f, teamIds: value.map((v) => v.id) }))}
               renderInput={(params) => <TextField {...params} label="Teams" />}
+            />
+            <TextField
+              select
+              label="Department"
+              value={form.departmentId}
+              onChange={(e) => setForm((f) => ({ ...f, departmentId: e.target.value }))}
+              fullWidth
+              helperText="The requester's own department, used to auto-fill the ticket form"
+            >
+              <MenuItem value="">None</MenuItem>
+              {departments.map((d) => <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>)}
+            </TextField>
+            <FormControlLabel
+              control={<Switch checked={form.isManager} onChange={(e) => setForm((f) => ({ ...f, isManager: e.target.checked }))} />}
+              label="Is a department manager (selectable as a ticket's Manager)"
             />
           </Stack>
         </DialogContent>

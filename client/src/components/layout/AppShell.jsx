@@ -105,6 +105,46 @@ export default function AppShell({ navItems, title }) {
         </Typography>
       </Toolbar>
 
+      {/* Expand / Collapse Button */}
+      {!isMobile && (
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: showLabels
+              ? "flex-end"
+              : "center",
+            px: 1,
+            pb: 1,
+          }}
+        >
+          <Tooltip
+            title={
+              collapsed
+                ? "Expand sidebar"
+                : "Collapse sidebar"
+            }
+            placement="right"
+            arrow
+          >
+            <IconButton
+              onClick={() => setCollapsed((prev) => !prev)}
+              className="sidebar-toggle-button"
+              aria-label={
+                collapsed
+                  ? "Expand sidebar"
+                  : "Collapse sidebar"
+              }
+            >
+              <ChevronLeftIcon
+                className={`sidebar-toggle-icon ${
+                  collapsed ? "collapsed" : ""
+                }`}
+              />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
+
       <Divider />
 
       {/* Navigation */}
@@ -160,49 +200,6 @@ export default function AppShell({ navItems, title }) {
           </Tooltip>
         ))}
       </List>
-
-      {/* Expand / Collapse Button */}
-      {!isMobile && (
-        <>
-          <Divider />
-
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: showLabels
-                ? "flex-end"
-                : "center",
-              p: 1,
-            }}
-          >
-            <Tooltip
-              title={
-                collapsed
-                  ? "Expand sidebar"
-                  : "Collapse sidebar"
-              }
-              placement="right"
-              arrow
-            >
-              <IconButton
-                onClick={() => setCollapsed((prev) => !prev)}
-                className="sidebar-toggle-button"
-                aria-label={
-                  collapsed
-                    ? "Expand sidebar"
-                    : "Collapse sidebar"
-                }
-              >
-                <ChevronLeftIcon
-                  className={`sidebar-toggle-icon ${
-                    collapsed ? "collapsed" : ""
-                  }`}
-                />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        </>
-      )}
     </Box>
   );
 
@@ -221,6 +218,8 @@ export default function AppShell({ navItems, title }) {
         sx={{
           borderBottom: 1,
           borderColor: "divider",
+          bgcolor: (t) => t.palette.mode === "dark" ? "rgba(42, 27, 31, 0.92)" : "rgba(255, 255, 255, 0.88)",
+          backdropFilter: "blur(12px)",
           zIndex: (t) => t.zIndex.drawer + 1,
         }}
       >
@@ -238,7 +237,7 @@ export default function AppShell({ navItems, title }) {
           {/* Page title */}
           <Typography
             variant="h6"
-            sx={{ flexGrow: 1 }}
+            sx={{ flexGrow: 1, fontWeight: 800, color: "secondary.main" }}
             noWrap
           >
             {title}
@@ -334,6 +333,9 @@ export default function AppShell({ navItems, title }) {
             "& .MuiDrawer-paper": {
               width: drawerWidth,
               boxSizing: "border-box",
+              borderRight: 1,
+              borderColor: "divider",
+              background: (t) => t.palette.mode === "dark" ? "#2a1b1f" : "linear-gradient(180deg, #ffffff 0%, #fff7f7 100%)",
               transition:
                 "width 0.25s ease-in-out",
             },

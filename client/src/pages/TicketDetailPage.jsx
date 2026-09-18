@@ -196,9 +196,10 @@ export default function TicketDetailPage() {
                     select
                     size="small"
                     label="Category"
-                    value={ticket.category.id}
+                    value={ticket.category?.id || ""}
                     onChange={(e) => applyUpdate({ categoryId: e.target.value })}
                   >
+                    <MenuItem value="">No category</MenuItem>
                     {flatCategories.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
                   </TextField>
                 </>
@@ -207,7 +208,22 @@ export default function TicketDetailPage() {
               {!isStaff && (
                 <>
                   <InfoRow label="Assignee" value={ticket.assignee?.name || "Unassigned"} />
-                  <InfoRow label="Category" value={ticket.category.name} />
+                  {ticket.category && <InfoRow label="Category" value={ticket.category.name} />}
+                </>
+              )}
+
+              {(ticket.fromDepartment || ticket.toDepartment) && (
+                <>
+                  <Divider />
+                  {ticket.fromDepartment && <InfoRow label="From Department" value={ticket.fromDepartment.name} />}
+                  {ticket.toDepartment && <InfoRow label="To Department" value={ticket.toDepartment.name} />}
+                  {ticket.manager && <InfoRow label="Manager" value={ticket.manager.name} />}
+                  {ticket.issue && (
+                    <InfoRow
+                      label="Issue"
+                      value={ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name}
+                    />
+                  )}
                 </>
               )}
 

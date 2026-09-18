@@ -23,7 +23,7 @@ async function authenticate(req, _res, next) {
 
   const user = await prisma.user.findUnique({
     where: { id: payload.sub },
-    include: { role: true, teamMemberships: { select: { teamId: true } } },
+    include: { role: true, department: true, teamMemberships: { select: { teamId: true } } },
   });
 
   if (!user || !user.isActive) {

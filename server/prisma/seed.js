@@ -101,6 +101,82 @@ async function main() {
     priorities[def.name] = priority;
   }
 
+  // Departments + their manager users and predefined issue lists, powering
+  // the ticket form's To Department / Manager / Issue dropdowns. Every
+  // department gets a trailing "Others" issue (isOther: true) for the
+  // custom-issue-text fallback.
+  const departmentDefs = [
+    {
+      name: "IT",
+      managers: ["IT Manager", "Infrastructure Manager", "Application Manager"],
+      issues: [
+        "Laptop / Desktop Issue", "Network Issue", "Internet Connectivity", "Software Installation",
+        "Application Access", "Email / Outlook Issue", "VPN Issue", "Password Reset",
+        "System Performance", "Printer Issue",
+      ],
+    },
+    {
+      name: "HR",
+      managers: ["HR Manager", "HR Operations Manager"],
+      issues: [
+        "Leave Issue", "Attendance Issue", "Payroll Issue", "Employee Information Update",
+        "Onboarding Issue", "Offboarding Issue", "Policy Clarification", "Document Request",
+      ],
+    },
+    {
+      name: "Finance",
+      managers: ["Finance Manager", "Accounts Manager"],
+      issues: ["Invoice Issue", "Payment Issue", "Expense Claim", "Purchase Request", "Billing Issue", "Budget Request"],
+    },
+    {
+      name: "Administration",
+      managers: ["Admin Manager", "Facilities Manager"],
+      issues: ["Facility Issue", "Office Equipment", "Access Card", "Transport Issue", "Housekeeping Issue", "Maintenance Issue"],
+    },
+    {
+      name: "Sales",
+      managers: ["Sales Manager", "Sales Operations Manager"],
+      issues: ["CRM Issue", "Customer Data Issue", "Sales Application Access", "Report Issue", "Customer Support Issue"],
+    },
+  ];
+
+  const managerPassword = process.env.SEED_MANAGER_PASSWORD || "Manager@12345";
+  const departments = {};
+  for (const def of departmentDefs) {
+    const department = await prisma.department.upsert({ where: { name: def.name }, update: {}, create: { name: def.name } });
+    departments[def.name] = department;
+
+    for (const managerName of def.managers) {
+      const email = `${managerName.toLowerCase().replace(/[^a-z]+/g, ".").replace(/^\.|\.$/g, "")}@helpdesk.local`;
+      const passwordHash = await bcrypt.hash(managerPassword, 12);
+      await prisma.user.upsert({
+        where: { email },
+        update: { departmentId: department.id, isManager: true },
+        create: { name: managerName, email, passwordHash, roleId: agentRole.id, departmentId: department.id, isManager: true },
+      });
+    }
+
+    for (const issueName of def.issues) {
+      await prisma.issue.upsert({
+        where: { name_departmentId: { name: issueName, departmentId: department.id } },
+        update: {},
+        create: { name: issueName, departmentId: department.id },
+      });
+    }
+    await prisma.issue.upsert({
+      where: { name_departmentId: { name: "Others", departmentId: department.id } },
+      update: {},
+      create: { name: "Others", departmentId: department.id, isOther: true },
+    });
+  }
+
+  // Give the demo end users/agents a department so "Raise a Ticket" has a
+  // populated From Department right away.
+  await prisma.user.update({ where: { id: endUser1.id }, data: { departmentId: departments.IT.id } });
+  await prisma.user.update({ where: { id: endUser2.id }, data: { departmentId: departments.HR.id } });
+  await prisma.user.update({ where: { id: agent1.id }, data: { departmentId: departments.IT.id } });
+  await prisma.user.update({ where: { id: agent2.id }, data: { departmentId: departments.IT.id } });
+
   const existingTickets = await prisma.ticket.count();
   if (existingTickets === 0) {
     console.log("Creating sample tickets...");
@@ -140,9 +216,10 @@ async function main() {
   }
 
   console.log("Seed complete.");
-  console.log(`  Admin login: ${adminEmail} / ${adminPassword}`);
-  console.log(`  Agent login: ${agent1.email} / Agent@12345`);
-  console.log(`  User login:  ${endUser1.email} / User@12345`);
+  console.log(`  Admin login:   ${adminEmail} / ${adminPassword}`);
+  console.log(`  Agent login:   ${agent1.email} / Agent@12345`);
+  console.log(`  User login:    ${endUser1.email} / User@12345`);
+  console.log(`  Manager login: it.manager@helpdesk.local / ${managerPassword}`);
 }
 
 main()
