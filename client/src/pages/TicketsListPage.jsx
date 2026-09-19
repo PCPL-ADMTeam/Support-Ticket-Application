@@ -165,7 +165,7 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
                 {showBulkActions && <TableCell padding="checkbox" />}
                 <TableCell>Ticket #</TableCell>
                 <TableCell>Title</TableCell>
-                <TableCell>Requester</TableCell>
+                <TableCell>Department</TableCell>
                 {showAssignee && <TableCell>Assignee</TableCell>}
                 <TableCell>Priority</TableCell>
                 <TableCell>
@@ -195,7 +195,7 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
                     </MuiLink>
                   </TableCell>
                   <TableCell sx={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</TableCell>
-                  <TableCell>{t.requester?.name}</TableCell>
+                  <TableCell>{t.toDepartment?.name || "—"}</TableCell>
                   {showAssignee && <TableCell>{t.assignee?.name || "—"}</TableCell>}
                   <TableCell><PriorityBadge name={t.priority.name} color={t.priority.color} /></TableCell>
                   <TableCell><StatusBadge status={t.status} /></TableCell>

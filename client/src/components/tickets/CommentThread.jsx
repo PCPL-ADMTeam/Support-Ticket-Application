@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Box,
-  Paper,
   Typography,
   Avatar,
   TextField,
@@ -70,17 +69,8 @@ export default function CommentThread({ comments, isStaff, onAddComment, submitt
   };
 
   return (
-    <Paper
-      variant="outlined"
-      sx={{
-        borderRadius: 3,
-        overflow: "hidden",
-        display: "flex",
-        flexDirection: "column",
-        boxShadow: "none",
-      }}
-    >
-      <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
+    <Box sx={{ display: "flex", flexDirection: "column" }}>
+      <Box sx={{ pb: 1.5, mb: 1, borderBottom: 1, borderColor: "divider" }}>
         <Typography variant="subtitle1" fontWeight={700}>Comments</Typography>
       </Box>
 
@@ -186,6 +176,6 @@ export default function CommentThread({ comments, isStaff, onAddComment, submitt
           />
         )}
       </Box>
-    </Paper>
+    </Box>
   );
 }

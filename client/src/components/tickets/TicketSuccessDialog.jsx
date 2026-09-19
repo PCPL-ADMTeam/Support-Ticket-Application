@@ -11,6 +11,8 @@ export default function TicketSuccessDialog({
   open,
   onClose,
   onViewTicket,
+  ticketId,
+  department,
 }) {
   return (
     <Dialog
@@ -65,8 +67,9 @@ export default function TicketSuccessDialog({
             color: "text.secondary",
           }}
         >
-          Your ticket has been submitted. Our support
-          team will get back to you shortly.
+          {ticketId && department
+            ? `Your ticket #${ticketId} has been raised to the ${department}.`
+            : "Your ticket has been submitted. Our support team will get back to you shortly."}
         </Typography>
 
         <Stack

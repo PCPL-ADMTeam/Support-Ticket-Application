@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Stack, Paper, Typography, Box, Link as MuiLink, IconButton, Dialog } from "@mui/material";
+import { Stack, Typography, Box, Link as MuiLink, IconButton, Dialog } from "@mui/material";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
@@ -24,7 +24,7 @@ export default function AttachmentList({ attachments }) {
   const files = attachments.filter((a) => !isImage(a));
 
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
+    <Box>
       <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
         <AttachFileIcon fontSize="small" sx={{ verticalAlign: "middle", mr: 0.5 }} />
         Attachments
@@ -95,19 +95,42 @@ export default function AttachmentList({ attachments }) {
         </Stack>
       )}
 
-      <Dialog open={Boolean(preview)} onClose={() => setPreview(null)} maxWidth="lg">
+      <Dialog
+        open={Boolean(preview)}
+        onClose={() => setPreview(null)}
+        maxWidth={false}
+        PaperProps={{
+          sx: {
+            bgcolor: "transparent",
+            boxShadow: "none",
+            overflow: "visible",
+            m: 2,
+            maxWidth: "95vw",
+            maxHeight: "95vh",
+          },
+        }}
+      >
         {preview && (
-          <Box sx={{ position: "relative", lineHeight: 0 }}>
+          <Box
+            sx={{
+              position: "relative",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              maxWidth: "95vw",
+              maxHeight: "95vh",
+            }}
+          >
             <IconButton
               onClick={() => setPreview(null)}
               title="Close"
               sx={{
                 position: "absolute",
-                top: 8,
-                right: 8,
-                bgcolor: "rgba(0, 0, 0, 0.55)",
+                top: -16,
+                right: -16,
+                bgcolor: "rgba(0, 0, 0, 0.65)",
                 color: "#fff",
-                "&:hover": { bgcolor: "rgba(0, 0, 0, 0.75)" },
+                "&:hover": { bgcolor: "rgba(0, 0, 0, 0.85)" },
               }}
             >
               <CloseIcon />
@@ -116,11 +139,21 @@ export default function AttachmentList({ attachments }) {
               component="img"
               src={`${API_ORIGIN}/uploads/${preview.filePath}`}
               alt={preview.fileName}
-              sx={{ display: "block", maxWidth: "90vw", maxHeight: "85vh" }}
+              sx={{
+                display: "block",
+                width: "auto",
+                height: "auto",
+                maxWidth: "95vw",
+                maxHeight: "95vh",
+                objectFit: "contain",
+                borderRadius: 1,
+                boxShadow: 6,
+                bgcolor: "background.paper",
+              }}
             />
           </Box>
         )}
       </Dialog>
-    </Paper>
+    </Box>
   );
 }

@@ -32,12 +32,14 @@ import { useTheme } from "@mui/material/styles";
 import { useAuth } from "../../context/AuthContext";
 import { useThemeMode } from "../../context/ThemeModeContext";
 import NotificationBell from "./NotificationBell";
+import ProfileDialog from "./ProfileDialog";
 import logo from "../../assets/logo.png";
 
 import "./AppShell.css";
 
 const DRAWER_WIDTH = 250;
 const COLLAPSED_WIDTH = 72;
+const HEADER_HEIGHT = 110;
 
 export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }) {
   const theme = useTheme();
@@ -50,6 +52,7 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
 
   const [userMenuAnchor, setUserMenuAnchor] = useState(null);
   const [ticketSearch, setTicketSearch] = useState("");
+  const [profileDialog, setProfileDialog] = useState(null); // "view" | "edit" | null
 
   const { user, logout } = useAuth();
   const { mode, toggleMode } = useThemeMode();
@@ -86,7 +89,7 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
         height: "100%",
       }}
     >
-      <Toolbar />
+      {isMobile && <Toolbar sx={{ minHeight: `${HEADER_HEIGHT}px !important` }} />}
 
       {/* Expand / Collapse Button */}
       {!isMobile && (
@@ -199,12 +202,11 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
           bgcolor: (t) => t.palette.mode === "dark" ? "rgba(42, 27, 31, 0.92)" : "rgba(255, 255, 255, 0.88)",
           backdropFilter: "blur(12px)",
           zIndex: (t) => t.zIndex.drawer + 1,
-          width: { md: `calc(100% - ${drawerWidth}px)` },
-          ml: { md: `${drawerWidth}px` },
-          transition: "width 0.25s ease-in-out, margin-left 0.25s ease-in-out",
+          width: "100%",
+          height: HEADER_HEIGHT,
         }}
       >
-        <Toolbar sx={{ gap: 1 }}>
+        <Toolbar sx={{ gap: 1, minHeight: `${HEADER_HEIGHT}px !important`, height: HEADER_HEIGHT }}>
           {/* Mobile menu button */}
           {isMobile && (
             <IconButton
@@ -217,16 +219,16 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
 
           {/* Brand */}
           <Box
-            sx={{ display: "flex", alignItems: "center", gap: 1, mr: 1, cursor: "pointer" }}
+            sx={{ display: "flex", alignItems: "center", gap: 1.5, mr: 1, cursor: "pointer" }}
             onClick={() => navigate(navItems[0]?.to || "/")}
           >
             <Box
               component="img"
               src={logo}
               alt="SOLVORA"
-              sx={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0 }}
+              sx={{ width: 58, height: 58, borderRadius: "50%", flexShrink: 0, display: "block" }}
             />
-            <Typography variant="h6" fontWeight={700} noWrap>
+            <Typography variant="h4" fontWeight={700} noWrap>
               SOLVORA
             </Typography>
           </Box>
@@ -317,12 +319,38 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
 
             <Divider />
 
+            <MenuItem
+              onClick={() => {
+                setUserMenuAnchor(null);
+                setProfileDialog("view");
+              }}
+            >
+              Profile
+            </MenuItem>
+
+            <MenuItem
+              onClick={() => {
+                setUserMenuAnchor(null);
+                setProfileDialog("edit");
+              }}
+            >
+              Edit Profile
+            </MenuItem>
+
+            <Divider />
+
             <MenuItem onClick={handleLogout}>
               Logout
             </MenuItem>
           </Menu>
         </Toolbar>
       </AppBar>
+
+      <ProfileDialog
+        open={Boolean(profileDialog)}
+        mode={profileDialog || "view"}
+        onClose={() => setProfileDialog(null)}
+      />
 
       {/* ================= SIDEBAR ================= */}
       <Box
@@ -356,6 +384,8 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
               background: (t) => t.palette.mode === "dark" ? "#2a1b1f" : "linear-gradient(180deg, #ffffff 0%, #fff7f7 100%)",
               transition:
                 "width 0.25s ease-in-out",
+              top: { md: `${HEADER_HEIGHT}px` },
+              height: { md: `calc(100% - ${HEADER_HEIGHT}px)` },
             },
           }}
         >
@@ -376,7 +406,7 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
             "width 0.25s ease-in-out",
         }}
       >
-        <Toolbar />
+        <Toolbar sx={{ minHeight: `${HEADER_HEIGHT}px !important` }} />
 
         <Box
           sx={{
