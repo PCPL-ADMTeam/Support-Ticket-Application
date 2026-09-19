@@ -9,6 +9,7 @@ import TicketSuccessDialog from "../../components/tickets/TicketSuccessDialog";
 export default function NewTicketPage() {
   const [submitting, setSubmitting] = useState(false);
   const [createdTicketId, setCreatedTicketId] = useState(null);
+  const [createdTicket, setCreatedTicket] = useState(null);
   const navigate = useNavigate();
   const { enqueueSnackbar } = useSnackbar();
 
@@ -17,6 +18,7 @@ export default function NewTicketPage() {
     try {
       const { data } = await ticketsApi.create(payload);
       setCreatedTicketId(data.data.id);
+      setCreatedTicket(data.data);
     } catch (err) {
       enqueueSnackbar(err.response?.data?.message || "Failed to create ticket", { variant: "error" });
     } finally {
@@ -37,6 +39,8 @@ export default function NewTicketPage() {
         open={Boolean(createdTicketId)}
         onClose={closeSuccessDialog}
         onViewTicket={() => navigate(`/tickets/${createdTicketId}`)}
+        ticketId={createdTicket?.ticketNumber}
+        department={createdTicket?.toDepartment?.name}
       />
     </Box>
   );

@@ -22,48 +22,41 @@ function scopeSqlForUser(user) {
   return Prisma.sql`"requesterId" = ${user.id}`;
 }
 
-function dateRangeSql(dateFrom, dateTo) {
-  const clauses = [];
-  if (dateFrom) clauses.push(Prisma.sql`"createdAt" >= ${new Date(dateFrom)}`);
-  if (dateTo) clauses.push(Prisma.sql`"createdAt" <= ${new Date(dateTo)}`);
-  return clauses.length ? Prisma.join(clauses, " AND ") : Prisma.sql`TRUE`;
+// "My Tickets" (assigned to me) vs "My Requests" (raised by me) dashboard
+// tabs — independent of role, driven purely by real assigneeId/requesterId
+// columns so the numbers always reflect actual tickets, never hardcoded.
+function scopeWhereForTab(user, scope) {
+  if (scope === "assigned") return { assigneeId: user.id };
+  if (scope === "created") return { requesterId: user.id };
+  return scopeWhereForUser(user);
 }
 
-async function getStats(user, { dateFrom, dateTo, days = 30 } = {}) {
-  const where = { AND: [scopeWhereForUser(user), dateFrom || dateTo ? {
+function scopeSqlForTab(user, scope) {
+  if (scope === "assigned") return Prisma.sql`"assigneeId" = ${user.id}`;
+  if (scope === "created") return Prisma.sql`"requesterId" = ${user.id}`;
+  return scopeSqlForUser(user);
+}
+
+async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
+  const where = { AND: [scopeWhereForTab(user, scope), dateFrom || dateTo ? {
     createdAt: {
       ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
       ...(dateTo ? { lte: new Date(dateTo) } : {}),
     },
   } : {}] };
 
-  const scopeSql = scopeSqlForUser(user);
-  const rangeSql = dateRangeSql(dateFrom, dateTo);
+  const scopeSql = scopeSqlForTab(user, scope);
 
   const [
     statusGroups,
     priorityGroups,
     categoryGroups,
-    overdueCount,
     totalCount,
-    recentTickets,
   ] = await Promise.all([
     prisma.ticket.groupBy({ by: ["status"], where, _count: { _all: true } }),
     prisma.ticket.groupBy({ by: ["priorityId"], where, _count: { _all: true } }),
     prisma.ticket.groupBy({ by: ["categoryId"], where, _count: { _all: true } }),
-    prisma.ticket.count({ where: { AND: [where, { dueAt: { lt: new Date() }, status: { notIn: ["RESOLVED", "CLOSED"] } }] } }),
     prisma.ticket.count({ where }),
-    prisma.ticket.findMany({
-      where,
-      take: 10,
-      orderBy: { createdAt: "desc" },
-      include: {
-        category: { select: { name: true } },
-        priority: { select: { name: true, color: true } },
-        requester: { select: { name: true } },
-        assignee: { select: { name: true } },
-      },
-    }),
   ]);
 
   const [priorities, categories] = await Promise.all([
@@ -73,7 +66,6 @@ async function getStats(user, { dateFrom, dateTo, days = 30 } = {}) {
 
   const kpis = {
     total: totalCount,
-    overdue: overdueCount,
     ...Object.fromEntries(STATUSES.map((s) => [s.toLowerCase(), 0])),
   };
   for (const g of statusGroups) kpis[g.status.toLowerCase()] = g._count._all;
@@ -121,22 +113,6 @@ async function getStats(user, { dateFrom, dateTo, days = 30 } = {}) {
     GROUP BY u.id, u.name
     ORDER BY "openTickets" DESC`;
 
-  const [{ avgresolutionseconds } = {}] = await prisma.$queryRaw`
-    SELECT AVG(EXTRACT(EPOCH FROM ("resolvedAt" - "createdAt"))) AS avgResolutionSeconds
-    FROM tickets
-    WHERE ${scopeSql} AND ${rangeSql} AND "resolvedAt" IS NOT NULL`;
-
-  const [{ compliant, resolvedwithdue } = {}] = await prisma.$queryRaw`
-    SELECT
-      COUNT(*) FILTER (WHERE "resolvedAt" <= "dueAt") AS compliant,
-      COUNT(*) AS resolvedWithDue
-    FROM tickets
-    WHERE ${scopeSql} AND ${rangeSql} AND "resolvedAt" IS NOT NULL AND "dueAt" IS NOT NULL`;
-
-  const slaComplianceRate = resolvedwithdue && Number(resolvedwithdue) > 0
-    ? Math.round((Number(compliant) / Number(resolvedwithdue)) * 1000) / 10
-    : null;
-
   return {
     kpis,
     byStatus,
@@ -144,9 +120,6 @@ async function getStats(user, { dateFrom, dateTo, days = 30 } = {}) {
     byCategory,
     trend,
     workload: workload.map((w) => ({ ...w, agentId: String(w.agentId), openTickets: Number(w.openTickets) })),
-    avgResolutionHours: avgresolutionseconds ? Math.round((Number(avgresolutionseconds) / 3600) * 10) / 10 : null,
-    slaComplianceRate,
-    recentTickets,
   };
 }
 

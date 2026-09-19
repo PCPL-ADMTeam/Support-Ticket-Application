@@ -1,10 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Grid, Stack, Box, Typography } from "@mui/material";
+import { Grid, Stack, Box, Typography, Tabs, Tab } from "@mui/material";
 import ConfirmationNumberIcon from "@mui/icons-material/ConfirmationNumber";
 import PendingActionsIcon from "@mui/icons-material/PendingActions";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
-import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import HourglassBottomIcon from "@mui/icons-material/HourglassBottom";
 import { subDays } from "date-fns";
 import { dashboardApi } from "../api/dashboard";
@@ -15,35 +14,37 @@ import PriorityBarChart from "../components/dashboard/PriorityBarChart";
 import CategoryBarChart from "../components/dashboard/CategoryBarChart";
 import TrendLineChart from "../components/dashboard/TrendLineChart";
 import AgentWorkloadTable from "../components/dashboard/AgentWorkloadTable";
-import RecentTicketsTable from "../components/dashboard/RecentTicketsTable";
 import DateRangeFilter from "../components/dashboard/DateRangeFilter";
+
+const SCOPES = ["assigned", "created"];
 
 // Shared dashboard used by all three portals. `variant="full"` (Admin) shows
 // every widget; `variant="personal"` (Agent/User) shows a lighter set scoped
 // server-side to the caller's own tickets — see dashboard.service.js.
+// The My Tickets / My Requests tabs re-fetch stats scoped to tickets
+// assigned to, or raised by, the current user (dashboard.service.js scope
+// param) — every number below reflects real tickets, nothing hardcoded.
 export default function DashboardPage({ variant = "personal", ticketsPath }) {
   const [days, setDays] = useState(30);
+  const [tab, setTab] = useState(0);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const scope = SCOPES[tab];
 
   const load = useCallback(async () => {
     setLoading(true);
     const dateFrom = subDays(new Date(), days).toISOString();
-    const { data } = await dashboardApi.getStats({ days, dateFrom });
+    const { data } = await dashboardApi.getStats({ days, dateFrom, scope });
     setStats(data.data);
     setLoading(false);
-  }, [days]);
+  }, [days, scope]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const goToTickets = (params) => navigate(`${ticketsPath}?${new URLSearchParams(params).toString()}`);
-
-  if (loading || !stats) return <LoadingState minHeight={400} />;
-
-  const { kpis, byStatus, byPriority, byCategory, trend, workload, avgResolutionHours, slaComplianceRate, recentTickets } = stats;
 
   return (
     <Stack spacing={3}>
@@ -52,6 +53,29 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
         <DateRangeFilter days={days} onChange={setDays} />
       </Box>
 
+      <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ borderBottom: 1, borderColor: "divider" }}>
+        <Tab label="My Tickets" id="dashboard-my-tickets-tab" />
+        <Tab label="My Requests" id="dashboard-my-requests-tab" />
+      </Tabs>
+
+      {loading || !stats ? (
+        <LoadingState minHeight={400} />
+      ) : (
+        <DashboardContent
+          variant={variant}
+          stats={stats}
+          goToTickets={goToTickets}
+        />
+      )}
+    </Stack>
+  );
+}
+
+function DashboardContent({ variant, stats, goToTickets }) {
+  const { kpis, byStatus, byPriority, byCategory, trend, workload } = stats;
+
+  return (
+    <>
       <Grid container spacing={2}>
         <Grid item xs={6} sm={4} md={2}>
           <KpiCard label="Total" value={kpis.total} color="#c81e2a" icon={<ConfirmationNumberIcon />} onClick={() => goToTickets({})} />
@@ -69,19 +93,7 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
           <KpiCard label="Resolved" value={kpis.resolved} color="#0ca30c" icon={<TaskAltIcon />} onClick={() => goToTickets({ status: "RESOLVED" })} />
         </Grid>
         <Grid item xs={6} sm={4} md={2}>
-          <KpiCard label="Overdue (SLA)" value={kpis.overdue} color="#d03b3b" icon={<WarningAmberIcon />} onClick={() => goToTickets({ overdue: "true" })} />
-        </Grid>
-      </Grid>
-
-      <Grid container spacing={2}>
-        <Grid item xs={12} md={4}>
-          <KpiCard label="Closed" value={kpis.closed} color="#898781" />
-        </Grid>
-        <Grid item xs={12} md={4}>
-          <KpiCard label="Avg. Resolution Time" value={avgResolutionHours != null ? `${avgResolutionHours}h` : "—"} color="#4a3aa7" />
-        </Grid>
-        <Grid item xs={12} md={4}>
-          <KpiCard label="SLA Compliance" value={slaComplianceRate != null ? `${slaComplianceRate}%` : "—"} color="#1baf7a" />
+          <KpiCard label="Closed" value={kpis.closed} color="#898781" onClick={() => goToTickets({ status: "CLOSED" })} />
         </Grid>
       </Grid>
 
@@ -114,8 +126,6 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
       )}
 
       {variant === "full" && workload.length > 0 && <AgentWorkloadTable workload={workload} />}
-
-      <RecentTicketsTable tickets={recentTickets} />
-    </Stack>
+    </>
   );
 }

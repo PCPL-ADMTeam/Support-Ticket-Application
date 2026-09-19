@@ -17,25 +17,31 @@ import {
   Divider,
   Tooltip,
   useMediaQuery,
+  TextField,
+  Button,
 } from "@mui/material";
 
 import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import Brightness4Icon from "@mui/icons-material/Brightness4";
 import Brightness7Icon from "@mui/icons-material/Brightness7";
-import SupportAgentIcon from "@mui/icons-material/SupportAgent";
+import SearchIcon from "@mui/icons-material/Search";
+import AddIcon from "@mui/icons-material/Add";
 
 import { useTheme } from "@mui/material/styles";
 import { useAuth } from "../../context/AuthContext";
 import { useThemeMode } from "../../context/ThemeModeContext";
 import NotificationBell from "./NotificationBell";
+import ProfileDialog from "./ProfileDialog";
+import logo from "../../assets/logo.png";
 
 import "./AppShell.css";
 
 const DRAWER_WIDTH = 250;
 const COLLAPSED_WIDTH = 72;
+const HEADER_HEIGHT = 110;
 
-export default function AppShell({ navItems, title }) {
+export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
 
@@ -45,6 +51,8 @@ export default function AppShell({ navItems, title }) {
   const [collapsed, setCollapsed] = useState(true);
 
   const [userMenuAnchor, setUserMenuAnchor] = useState(null);
+  const [ticketSearch, setTicketSearch] = useState("");
+  const [profileDialog, setProfileDialog] = useState(null); // "view" | "edit" | null
 
   const { user, logout } = useAuth();
   const { mode, toggleMode } = useThemeMode();
@@ -67,6 +75,12 @@ export default function AppShell({ navItems, title }) {
     navigate("/login");
   };
 
+  const handleTicketSearch = (event) => {
+    event.preventDefault();
+    const search = ticketSearch.trim();
+    navigate(search ? `${ticketSearchPath}?search=${encodeURIComponent(search)}` : ticketSearchPath);
+  };
+
   const drawerContent = (
     <Box
       sx={{
@@ -75,44 +89,14 @@ export default function AppShell({ navItems, title }) {
         height: "100%",
       }}
     >
-      {/* Sidebar Header */}
-      <Toolbar
-        className="sidebar-header"
-        sx={{
-          gap: 1,
-          px: showLabels ? 2 : 1,
-          justifyContent: showLabels ? "flex-start" : "center",
-        }}
-      >
-        <Tooltip
-          title={showLabels ? "" : "Helpdesk"}
-          placement="right"
-          arrow
-          disableHoverListener={showLabels}
-        >
-          <SupportAgentIcon color="primary" />
-        </Tooltip>
-
-        <Typography
-          variant="h6"
-          noWrap
-          fontWeight={700}
-          className={`sidebar-brand-text ${
-            showLabels ? "" : "collapsed"
-          }`}
-        >
-          Helpdesk
-        </Typography>
-      </Toolbar>
+      {isMobile && <Toolbar sx={{ minHeight: `${HEADER_HEIGHT}px !important` }} />}
 
       {/* Expand / Collapse Button */}
       {!isMobile && (
         <Box
           sx={{
             display: "flex",
-            justifyContent: showLabels
-              ? "flex-end"
-              : "center",
+            justifyContent: showLabels ? "flex-end" : "center",
             px: 1,
             pb: 1,
           }}
@@ -164,10 +148,7 @@ export default function AppShell({ navItems, title }) {
               onClick={() => setMobileOpen(false)}
               className="sidebar-nav-item"
               sx={{
-                justifyContent: showLabels
-                  ? "flex-start"
-                  : "center",
-
+                justifyContent: showLabels ? "flex-start" : "center",
                 px: showLabels ? 2 : 1,
 
                 "&.active": {
@@ -221,9 +202,11 @@ export default function AppShell({ navItems, title }) {
           bgcolor: (t) => t.palette.mode === "dark" ? "rgba(42, 27, 31, 0.92)" : "rgba(255, 255, 255, 0.88)",
           backdropFilter: "blur(12px)",
           zIndex: (t) => t.zIndex.drawer + 1,
+          width: "100%",
+          height: HEADER_HEIGHT,
         }}
       >
-        <Toolbar sx={{ gap: 1 }}>
+        <Toolbar sx={{ gap: 1, minHeight: `${HEADER_HEIGHT}px !important`, height: HEADER_HEIGHT }}>
           {/* Mobile menu button */}
           {isMobile && (
             <IconButton
@@ -234,14 +217,51 @@ export default function AppShell({ navItems, title }) {
             </IconButton>
           )}
 
-          {/* Page title */}
-          <Typography
-            variant="h6"
-            sx={{ flexGrow: 1, fontWeight: 800, color: "secondary.main" }}
-            noWrap
+          {/* Brand */}
+          <Box
+            sx={{ display: "flex", alignItems: "center", gap: 1.5, mr: 1, cursor: "pointer" }}
+            onClick={() => navigate(navItems[0]?.to || "/")}
           >
-            {title}
-          </Typography>
+            <Box
+              component="img"
+              src={logo}
+              alt="SOLVORA"
+              sx={{ width: 58, height: 58, borderRadius: "50%", flexShrink: 0, display: "block" }}
+            />
+            <Typography variant="h4" fontWeight={700} noWrap>
+              SOLVORA
+            </Typography>
+          </Box>
+
+          {ticketSearchPath && (
+            <Box
+              component="form"
+              onSubmit={handleTicketSearch}
+              sx={{ flexGrow: 1, display: "flex", justifyContent: "center" }}
+            >
+              <TextField
+                size="small"
+                placeholder="Search tickets"
+                value={ticketSearch}
+                onChange={(event) => setTicketSearch(event.target.value)}
+                inputProps={{ "aria-label": "Search tickets" }}
+                InputProps={{ startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, color: "text.secondary" }} /> }}
+                sx={{ width: { xs: 140, sm: "min(360px, 38vw)" } }}
+              />
+            </Box>
+          )}
+
+          {raiseTicketPath && (
+            <Button
+              component={NavLink}
+              to={raiseTicketPath}
+              variant="contained"
+              startIcon={<AddIcon />}
+              sx={{ whiteSpace: "nowrap" }}
+            >
+              Create Ticket
+            </Button>
+          )}
 
           {/* Theme */}
           <IconButton
@@ -299,12 +319,38 @@ export default function AppShell({ navItems, title }) {
 
             <Divider />
 
+            <MenuItem
+              onClick={() => {
+                setUserMenuAnchor(null);
+                setProfileDialog("view");
+              }}
+            >
+              Profile
+            </MenuItem>
+
+            <MenuItem
+              onClick={() => {
+                setUserMenuAnchor(null);
+                setProfileDialog("edit");
+              }}
+            >
+              Edit Profile
+            </MenuItem>
+
+            <Divider />
+
             <MenuItem onClick={handleLogout}>
               Logout
             </MenuItem>
           </Menu>
         </Toolbar>
       </AppBar>
+
+      <ProfileDialog
+        open={Boolean(profileDialog)}
+        mode={profileDialog || "view"}
+        onClose={() => setProfileDialog(null)}
+      />
 
       {/* ================= SIDEBAR ================= */}
       <Box
@@ -338,6 +384,8 @@ export default function AppShell({ navItems, title }) {
               background: (t) => t.palette.mode === "dark" ? "#2a1b1f" : "linear-gradient(180deg, #ffffff 0%, #fff7f7 100%)",
               transition:
                 "width 0.25s ease-in-out",
+              top: { md: `${HEADER_HEIGHT}px` },
+              height: { md: `calc(100% - ${HEADER_HEIGHT}px)` },
             },
           }}
         >
@@ -358,7 +406,7 @@ export default function AppShell({ navItems, title }) {
             "width 0.25s ease-in-out",
         }}
       >
-        <Toolbar />
+        <Toolbar sx={{ minHeight: `${HEADER_HEIGHT}px !important` }} />
 
         <Box
           sx={{

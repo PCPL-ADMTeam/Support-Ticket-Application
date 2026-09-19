@@ -1,5 +1,5 @@
 import { Timeline, TimelineItem, TimelineSeparator, TimelineDot, TimelineConnector, TimelineContent, TimelineOppositeContent } from "@mui/lab";
-import { Typography, Paper } from "@mui/material";
+import { Typography, Box } from "@mui/material";
 import { format } from "date-fns";
 
 const ACTION_LABELS = {
@@ -9,6 +9,9 @@ const ACTION_LABELS = {
   TEAM_CHANGE: "Team changed",
   PRIORITY_CHANGE: "Priority changed",
   CATEGORY_CHANGE: "Category changed",
+  DEPARTMENT_CHANGE: "Department changed",
+  MANAGER_CHANGE: "Manager changed",
+  ISSUE_CHANGE: "Issue changed",
   COMMENTED: "Commented",
   BULK_UPDATE: "Bulk updated",
 };
@@ -24,7 +27,7 @@ export default function ActivityTimeline({ history }) {
   if (!history.length) return null;
 
   return (
-    <Paper variant="outlined" sx={{ p: 2 }}>
+    <Box>
       <Typography variant="subtitle1" fontWeight={700} gutterBottom>Activity History</Typography>
       <Timeline sx={{ p: 0, m: 0 }}>
         {history.map((h, idx) => (
@@ -49,6 +52,6 @@ export default function ActivityTimeline({ history }) {
           </TimelineItem>
         ))}
       </Timeline>
-    </Paper>
+    </Box>
   );
 }

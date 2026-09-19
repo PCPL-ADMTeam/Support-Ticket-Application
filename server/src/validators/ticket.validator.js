@@ -20,6 +20,10 @@ const updateTicketValidator = [
   body("teamId").optional({ nullable: true }).isString(),
   body("priorityId").optional().isString(),
   body("categoryId").optional().isString(),
+  body("toDepartmentId").optional({ nullable: true }).isString(),
+  body("managerId").optional({ nullable: true }).isString(),
+  body("issueId").optional({ nullable: true }).isString(),
+  body("customIssueText").optional({ nullable: true }).isString(),
 ];
 
 const commentValidator = [

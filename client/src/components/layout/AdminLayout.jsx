@@ -22,5 +22,5 @@ const navItems = [
 ];
 
 export default function AdminLayout() {
-  return <AppShell navItems={navItems} title="Admin Portal" />;
+  return <AppShell navItems={navItems} />;
 }

@@ -6,7 +6,6 @@ import ProtectedRoute, { homeForRole } from "./routes/ProtectedRoute";
 
 import LoginPage from "./pages/auth/LoginPage";
 import NotFoundPage from "./pages/NotFoundPage";
-import ProfilePage from "./pages/ProfilePage";
 import TicketDetailPage from "./pages/TicketDetailPage";
 
 import RoleAwareLayout from "./components/layout/RoleAwareLayout";
@@ -50,7 +49,6 @@ export default function App() {
                 <Route element={<RoleAwareLayout />}>
                   <Route path="/" element={<RootRedirect />} />
                   <Route path="/tickets/:id" element={<TicketDetailPage />} />
-                  <Route path="/profile" element={<ProfilePage />} />
                 </Route>
               </Route>
 
@@ -74,7 +72,6 @@ export default function App() {
                 <Route path="/agent" element={<AgentLayout />}>
                   <Route index element={<AgentDashboardPage />} />
                   <Route path="queue" element={<AgentQueuePage />} />
-                  <Route path="profile" element={<ProfilePage />} />
                 </Route>
               </Route>
 
@@ -84,7 +81,6 @@ export default function App() {
                   <Route index element={<PortalDashboardPage />} />
                   <Route path="new-ticket" element={<NewTicketPage />} />
                   <Route path="my-tickets" element={<MyTicketsPage />} />
-                  <Route path="profile" element={<ProfilePage />} />
                 </Route>
               </Route>
 

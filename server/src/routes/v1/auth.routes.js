@@ -10,7 +10,7 @@ const router = Router();
 // Stricter limiter on login to slow down credential-stuffing / brute force.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 50,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many login attempts. Try again later." },

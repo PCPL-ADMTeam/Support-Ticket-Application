@@ -10,29 +10,6 @@
   overflow-x: hidden;
 }
 
-/* Sidebar header */
-.sidebar-header {
-  overflow: hidden;
-}
-
-/* Helpdesk text */
-.sidebar-brand-text {
-  white-space: nowrap;
-  overflow: hidden;
-
-  opacity: 1;
-  max-width: 200px;
-
-  transition:
-    opacity 0.2s ease-in-out,
-    max-width 0.25s ease-in-out;
-}
-
-.sidebar-brand-text.collapsed {
-  opacity: 0;
-  max-width: 0;
-}
-
 /* Navigation item */
 .sidebar-nav-item {
   min-height: 48px;
