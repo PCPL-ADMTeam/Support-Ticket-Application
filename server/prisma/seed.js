@@ -5,7 +5,8 @@
 require("dotenv").config();
 const bcrypt = require("bcryptjs");
 const { PrismaClient } = require("@prisma/client");
-const { formatTicketNumber } = require("../src/utils/ticketNumber");
+const { formatDepartmentTicketNumber } = require("../src/utils/ticketNumber");
+const { emailTemplateDefaults } = require("./emailTemplateDefaults");
 
 const prisma = new PrismaClient();
 
@@ -101,60 +102,94 @@ async function main() {
     priorities[def.name] = priority;
   }
 
-  // Departments + their manager users and predefined issue lists, powering
-  // the ticket form's To Department / Manager / Issue dropdowns. Every
-  // department gets a trailing "Others" issue (isOther: true) for the
-  // custom-issue-text fallback.
+  // Departments + their predefined issue lists, powering the ticket form's
+  // To Department / Issue dropdowns. Every department gets a trailing
+  // "Others" issue (isOther: true) for the custom-issue-text fallback.
+  // Hardware covers both hardware AND software support (no separate
+  // Software department); Cloud covers both Azure and AWS (no separate
+  // Azure/AWS departments) — see server/README or the business rules this
+  // taxonomy was defined against.
   const departmentDefs = [
     {
-      name: "IT",
-      managers: ["IT Manager", "Infrastructure Manager", "Application Manager"],
+      name: "Hardware",
+      ticketPrefix: "HW",
       issues: [
-        "Laptop / Desktop Issue", "Network Issue", "Internet Connectivity", "Software Installation",
-        "Application Access", "Email / Outlook Issue", "VPN Issue", "Password Reset",
-        "System Performance", "Printer Issue",
+        "Laptop / Desktop Issue", "Hardware Failure", "Keyboard / Mouse Issue", "Monitor / Display Issue",
+        "Printer Issue", "Peripherals Issue", "Software Installation", "Application Access",
+        "System Performance", "Network Issue", "Internet Connectivity",
       ],
     },
     {
       name: "HR",
-      managers: ["HR Manager", "HR Operations Manager"],
+      ticketPrefix: "HR",
       issues: [
         "Leave Issue", "Attendance Issue", "Payroll Issue", "Employee Information Update",
         "Onboarding Issue", "Offboarding Issue", "Policy Clarification", "Document Request",
       ],
     },
     {
-      name: "Finance",
-      managers: ["Finance Manager", "Accounts Manager"],
-      issues: ["Invoice Issue", "Payment Issue", "Expense Claim", "Purchase Request", "Billing Issue", "Budget Request"],
-    },
-    {
       name: "Administration",
-      managers: ["Admin Manager", "Facilities Manager"],
+      ticketPrefix: "AD",
       issues: ["Facility Issue", "Office Equipment", "Access Card", "Transport Issue", "Housekeeping Issue", "Maintenance Issue"],
     },
     {
+      name: "BI/Copilot",
+      ticketPrefix: "BIC",
+      issues: [
+        "Power BI Access Request", "Power BI Report Issue", "Dashboard Data Issue", "Data Refresh Issue",
+        "Copilot License Request", "Copilot Access Issue", "Copilot Output Issue",
+      ],
+    },
+    {
+      name: "M365",
+      ticketPrefix: "M365",
+      issues: [
+        "Outlook / Email Issue", "Teams Issue", "OneDrive Issue", "SharePoint Issue",
+        "Office License Issue", "Calendar / Scheduling Issue",
+      ],
+    },
+    {
+      name: "Security",
+      ticketPrefix: "SEC",
+      issues: [
+        "Password Reset", "Account Lockout", "Multi-Factor Authentication Issue", "VPN Issue",
+        "Phishing / Suspicious Email", "Antivirus / Malware Alert", "Access / Permission Request",
+      ],
+    },
+    {
+      name: "Cloud",
+      ticketPrefix: "CLD",
+      issues: [
+        "Cloud VM / Instance Issue", "Cloud Storage Access", "Cloud Cost / Billing Query",
+        "IAM / Access Issue", "Deployment Issue", "Cloud Backup Issue",
+      ],
+    },
+    {
       name: "Sales",
-      managers: ["Sales Manager", "Sales Operations Manager"],
+      ticketPrefix: "SAL",
       issues: ["CRM Issue", "Customer Data Issue", "Sales Application Access", "Report Issue", "Customer Support Issue"],
+    },
+    {
+      name: "Operations",
+      ticketPrefix: "OPS",
+      issues: [
+        "Process Issue", "Vendor / Supplier Issue", "Inventory Issue", "Logistics Issue",
+        "Compliance Issue", "Documentation Request",
+      ],
     },
   ];
 
-  const managerPassword = process.env.SEED_MANAGER_PASSWORD || "Manager@12345";
+  // No separate "manager" users are seeded — a department manager is just an
+  // existing Agent with isManager=true (set below on the sample agents).
+  // Admins pick which agents manage which department from the Users page.
   const departments = {};
   for (const def of departmentDefs) {
-    const department = await prisma.department.upsert({ where: { name: def.name }, update: {}, create: { name: def.name } });
+    const department = await prisma.department.upsert({
+      where: { name: def.name },
+      update: {},
+      create: { name: def.name, ticketPrefix: def.ticketPrefix },
+    });
     departments[def.name] = department;
-
-    for (const managerName of def.managers) {
-      const email = `${managerName.toLowerCase().replace(/[^a-z]+/g, ".").replace(/^\.|\.$/g, "")}@helpdesk.local`;
-      const passwordHash = await bcrypt.hash(managerPassword, 12);
-      await prisma.user.upsert({
-        where: { email },
-        update: { departmentId: department.id, isManager: true },
-        create: { name: managerName, email, passwordHash, roleId: agentRole.id, departmentId: department.id, isManager: true },
-      });
-    }
 
     for (const issueName of def.issues) {
       await prisma.issue.upsert({
@@ -172,10 +207,10 @@ async function main() {
 
   // Give the demo end users/agents a department so "Raise a Ticket" has a
   // populated From Department right away.
-  await prisma.user.update({ where: { id: endUser1.id }, data: { departmentId: departments.IT.id } });
+  await prisma.user.update({ where: { id: endUser1.id }, data: { departmentId: departments.Hardware.id } });
   await prisma.user.update({ where: { id: endUser2.id }, data: { departmentId: departments.HR.id } });
-  await prisma.user.update({ where: { id: agent1.id }, data: { departmentId: departments.IT.id } });
-  await prisma.user.update({ where: { id: agent2.id }, data: { departmentId: departments.IT.id } });
+  await prisma.user.update({ where: { id: agent1.id }, data: { departmentId: departments.Hardware.id, isManager: true } });
+  await prisma.user.update({ where: { id: agent2.id }, data: { departmentId: departments.Hardware.id } });
 
   const existingTickets = await prisma.ticket.count();
   if (existingTickets === 0) {
@@ -191,9 +226,18 @@ async function main() {
     for (const t of sampleTickets) {
       const category = await prisma.category.findFirst({ where: { name: t.category } });
       const priority = priorities[t.priority];
+      // Same department-wise numbering path ticket.service.js#createTicket
+      // uses — one authoritative implementation, no separate seed-only
+      // formatter. Sample tickets are routed to Hardware (matching their
+      // assignees, who are Hardware staff).
+      const hardwareDept = await prisma.department.update({
+        where: { id: departments.Hardware.id },
+        data: { ticketSequence: { increment: 1 } },
+        select: { ticketPrefix: true, ticketSequence: true },
+      });
       const created = await prisma.ticket.create({
         data: {
-          ticketNumber: "PENDING",
+          ticketNumber: formatDepartmentTicketNumber(hardwareDept.ticketPrefix, hardwareDept.ticketSequence),
           title: t.title,
           description: t.description,
           categoryId: category.id,
@@ -201,13 +245,14 @@ async function main() {
           requesterId: t.requester.id,
           assigneeId: t.assignee.id,
           teamId: team.id,
+          fromDepartmentId: departments.Hardware.id,
+          toDepartmentId: departments.Hardware.id,
           status: t.status,
           dueAt: new Date(Date.now() + 24 * 3600 * 1000),
           resolvedAt: ["RESOLVED", "CLOSED"].includes(t.status) ? new Date() : null,
           closedAt: t.status === "CLOSED" ? new Date() : null,
         },
       });
-      await prisma.ticket.update({ where: { id: created.id }, data: { ticketNumber: formatTicketNumber(created.seq) } });
       await prisma.ticketHistory.create({ data: { ticketId: created.id, userId: admin.id, action: "CREATED" } });
       await prisma.ticketComment.create({
         data: { ticketId: created.id, authorId: t.requester.id, body: "Please look into this as soon as possible.", isInternal: false },
@@ -215,11 +260,26 @@ async function main() {
     }
   }
 
+  // Default database-driven email templates — one per ticket lifecycle
+  // event key that ticket.service.js/notification.service.js emit. This is
+  // the single source of truth for email subject/body content (bodies are
+  // HTML with a "View Ticket" button); see emailTemplateDefaults.js for the
+  // actual content and emailTemplate.service.js for rendering. `update: {}`
+  // is deliberate — re-running seed must never clobber an Admin's edits to
+  // an already-existing template.
+  for (const def of emailTemplateDefaults) {
+    await prisma.emailTemplate.upsert({
+      where: { eventKey: def.eventKey },
+      update: {},
+      create: def,
+    });
+  }
+
   console.log("Seed complete.");
-  console.log(`  Admin login:   ${adminEmail} / ${adminPassword}`);
-  console.log(`  Agent login:   ${agent1.email} / Agent@12345`);
-  console.log(`  User login:    ${endUser1.email} / User@12345`);
-  console.log(`  Manager login: it.manager@helpdesk.local / ${managerPassword}`);
+  console.log(`  Admin login:           ${adminEmail} / ${adminPassword}`);
+  console.log(`  Agent login:           ${agent1.email} / Agent@12345 (also flagged as Hardware department manager)`);
+  console.log(`  Agent login:           ${agent2.email} / Agent@12345`);
+  console.log(`  User login:            ${endUser1.email} / User@12345`);
 }
 
 main()

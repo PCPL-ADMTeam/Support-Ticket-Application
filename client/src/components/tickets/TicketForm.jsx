@@ -123,7 +123,6 @@ export default function TicketForm({
   const [form, setForm] = useState({
     priorityId: "",
     toDepartmentId: "",
-    managerId: "",
     issueId: "",
     customIssueText: "",
     description: "",
@@ -144,12 +143,12 @@ export default function TicketForm({
     [departments, form.toDepartmentId]
   );
 
-  const selectedManager = useMemo(
-    () =>
-      selectedDepartment?.managers.find(
-        (m) => m.id === form.managerId
-      ) || null,
-    [selectedDepartment, form.managerId]
+  // The manager is never chosen by the requester — it's whichever AGENT the
+  // backend has flagged as this department's manager (Admin-configured).
+  // There is at most one per department in practice; take the first.
+  const departmentManager = useMemo(
+    () => selectedDepartment?.managers?.[0] || null,
+    [selectedDepartment]
   );
 
   const selectedIssue = useMemo(
@@ -194,7 +193,6 @@ export default function TicketForm({
     setForm((prev) => ({
       ...prev,
       toDepartmentId: value?.id || "",
-      managerId: "",
       issueId: "",
       customIssueText: "",
     }));
@@ -202,7 +200,6 @@ export default function TicketForm({
     setErrors((prev) => ({
       ...prev,
       toDepartmentId: "",
-      managerId: "",
       issueId: "",
       customIssueText: "",
     }));
@@ -311,11 +308,6 @@ export default function TicketForm({
         "Department is required";
     }
 
-    if (!form.managerId) {
-      newErrors.managerId =
-        "Manager is required";
-    }
-
     if (!form.issueId) {
       newErrors.issueId = "Issue is required";
     }
@@ -379,10 +371,6 @@ export default function TicketForm({
     formData.append(
       "toDepartmentId",
       form.toDepartmentId
-    );
-    formData.append(
-      "managerId",
-      form.managerId
     );
     formData.append(
       "issueId",
@@ -642,7 +630,8 @@ export default function TicketForm({
               </Stack>
 
               {/* =================================================
-                  MANAGER
+                  MANAGER (auto-determined from the selected
+                  department — never chosen by the requester)
               ================================================= */}
 
               <Box>
@@ -650,44 +639,24 @@ export default function TicketForm({
                   Manager
                 </Typography>
 
-                <Autocomplete
+                <TextField
                   fullWidth
                   size="small"
-                  disabled={!selectedDepartment}
-                  options={
-                    selectedDepartment?.managers ||
-                    []
+                  value={
+                    departmentManager?.name || ""
                   }
-                  getOptionLabel={(m) => m.name}
-                  value={selectedManager}
-                  onChange={(_, value) => {
-                    setForm((prev) => ({
-                      ...prev,
-                      managerId:
-                        value?.id || "",
-                    }));
-
-                    setErrors((prev) => ({
-                      ...prev,
-                      managerId: "",
-                    }));
-                  }}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      placeholder={
-                        selectedDepartment
-                          ? "Select manager"
-                          : "Select department first"
-                      }
-                      error={Boolean(
-                        errors.managerId
-                      )}
-                      helperText={
-                        errors.managerId
-                      }
-                    />
-                  )}
+                  placeholder={
+                    !selectedDepartment
+                      ? "Select department first"
+                      : "No manager assigned"
+                  }
+                  helperText={
+                    selectedDepartment &&
+                    !departmentManager
+                      ? "This department has no manager assigned yet — an admin will need to set one, but you can still raise the ticket."
+                      : "Automatically set to this department's manager"
+                  }
+                  InputProps={{ readOnly: true }}
                 />
               </Box>
 

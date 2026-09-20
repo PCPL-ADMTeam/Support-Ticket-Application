@@ -11,19 +11,21 @@ import LoadingState from "../components/common/LoadingState";
 import KpiCard from "../components/dashboard/KpiCard";
 import StatusPieChart from "../components/dashboard/StatusPieChart";
 import PriorityBarChart from "../components/dashboard/PriorityBarChart";
-import CategoryBarChart from "../components/dashboard/CategoryBarChart";
 import TrendLineChart from "../components/dashboard/TrendLineChart";
 import AgentWorkloadTable from "../components/dashboard/AgentWorkloadTable";
 import DateRangeFilter from "../components/dashboard/DateRangeFilter";
 
-const SCOPES = ["assigned", "created"];
+const SCOPES = ["created", "assigned"];
 
 // Shared dashboard used by all three portals. `variant="full"` (Admin) shows
 // every widget; `variant="personal"` (Agent/User) shows a lighter set scoped
 // server-side to the caller's own tickets — see dashboard.service.js.
-// The My Tickets / My Requests tabs re-fetch stats scoped to tickets
-// assigned to, or raised by, the current user (dashboard.service.js scope
-// param) — every number below reflects real tickets, nothing hardcoded.
+// The Raised by Me / Assigned to Me tabs re-fetch stats scoped to tickets
+// the current user raised (requesterId), or is currently assigned to work
+// on (assigneeId) — dashboard.service.js derives the id from the
+// authenticated user, never from a client-supplied param, and every card/
+// chart below is recomputed from that same scoped query (never a combined
+// requester+assignee dataset).
 export default function DashboardPage({ variant = "personal", ticketsPath }) {
   const [days, setDays] = useState(30);
   const [tab, setTab] = useState(0);
@@ -44,7 +46,14 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
     load();
   }, [load]);
 
-  const goToTickets = (params) => navigate(`${ticketsPath}?${new URLSearchParams(params).toString()}`);
+  // BUG FIX: this previously forwarded only `params` (e.g. { status: "OPEN" }),
+  // dropping the active "Raised by Me" / "Assigned to Me" tab entirely — so
+  // clicking any KPI/chart under the "Assigned to Me" tab landed on the
+  // ticket list with no scope at all and showed every ticket the user can
+  // see, not just the ones assigned to them. `scope` must always ride along
+  // so the destination list (TicketsListPage, via ticket.service.js#
+  // listTickets's `scope` filter) stays on the same tab the user was on.
+  const goToTickets = (params) => navigate(`${ticketsPath}?${new URLSearchParams({ scope, ...params }).toString()}`);
 
   return (
     <Stack spacing={3}>
@@ -54,8 +63,8 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
       </Box>
 
       <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ borderBottom: 1, borderColor: "divider" }}>
-        <Tab label="My Tickets" id="dashboard-my-tickets-tab" />
-        <Tab label="My Requests" id="dashboard-my-requests-tab" />
+        <Tab label="Raised by Me" id="dashboard-raised-by-me-tab" />
+        <Tab label="Assigned to Me" id="dashboard-assigned-to-me-tab" />
       </Tabs>
 
       {loading || !stats ? (
@@ -72,7 +81,7 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
 }
 
 function DashboardContent({ variant, stats, goToTickets }) {
-  const { kpis, byStatus, byPriority, byCategory, trend, workload } = stats;
+  const { kpis, byStatus, byPriority, trend, workload } = stats;
 
   return (
     <>
@@ -108,10 +117,7 @@ function DashboardContent({ variant, stats, goToTickets }) {
 
       {variant === "full" && (
         <Grid container spacing={2}>
-          <Grid item xs={12} md={6}>
-            <CategoryBarChart data={byCategory} />
-          </Grid>
-          <Grid item xs={12} md={6}>
+          <Grid item xs={12}>
             <TrendLineChart data={trend} />
           </Grid>
         </Grid>

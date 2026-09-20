@@ -37,6 +37,18 @@ module.exports = {
     from: process.env.SMTP_FROM || "Helpdesk <no-reply@helpdesk.local>",
   },
 
+  // CloudReady Microsoft Entra ID (Graph) — client-credentials app used both
+  // to look up corporate directory users and to send ticket emails via
+  // Graph /sendMail. All three must be set for either feature to work;
+  // never hardcode these — see server/.env.example. CLOUDREADY_MAILBOX is
+  // the one support mailbox Graph sends "from"; it's never client-supplied.
+  cloudready: {
+    tenantId: process.env.CLOUDREADY_TENANT_ID || "",
+    clientId: process.env.CLOUDREADY_CLIENT_ID || "",
+    clientSecret: process.env.CLOUDREADY_CLIENT_SECRET || "",
+    mailbox: process.env.CLOUDREADY_MAILBOX || "",
+  },
+
   upload: {
     dir: process.env.UPLOAD_DIR || "uploads",
     maxSizeMb: parseInt(process.env.MAX_UPLOAD_SIZE_MB || "10", 10),

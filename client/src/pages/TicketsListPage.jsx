@@ -17,6 +17,7 @@ import {
   MenuItem,
   TextField,
   Stack,
+  Chip,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import { format } from "date-fns";
@@ -36,7 +37,22 @@ const EMPTY_FILTERS = {};
 // already enforced by the API (ticket.service.js#scopeWhereForUser) — an
 // End User can only ever receive their own tickets here regardless of what
 // filters are applied.
-export default function TicketsListPage({ title, newTicketPath, showAssignee, showBulkActions, hideHeading = false, additionalFilters = EMPTY_FILTERS }) {
+export default function TicketsListPage({
+  title,
+  newTicketPath,
+  showAssignee,
+  showAssigneeFilter,
+  showRequester,
+  showIssue,
+  showIssueFilter,
+  showDepartment = true,
+  showDepartmentFilter,
+  showAssignedFilter,
+  showBulkActions,
+  highlightUnassigned,
+  hideHeading = false,
+  additionalFilters = EMPTY_FILTERS,
+}) {
   const [searchParams] = useSearchParams();
 
   const [filters, setFilters] = useState({
@@ -47,6 +63,14 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
     status: searchParams.get("status") || "",
     overdue: searchParams.get("overdue") || "",
     search: searchParams.get("search") || "",
+    assigned: searchParams.get("assigned") || "",
+    departmentId: searchParams.get("departmentId") || "",
+    issueId: searchParams.get("issueId") || "",
+    // "Raised by Me" ("created") / "Assigned to Me" ("assigned") — set only
+    // when navigating in from a dashboard KPI/card (DashboardPage.jsx's
+    // goToTickets); otherwise absent, preserving each page's own default
+    // scope (e.g. MyTicketsPage's "everything I raised or am assigned to").
+    scope: searchParams.get("scope") || "",
   });
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -116,7 +140,14 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
         </Box>
       )}
 
-      <TicketFilters filters={filters} onChange={setFilters} showAssignee={showAssignee} />
+      <TicketFilters
+        filters={filters}
+        onChange={setFilters}
+        showAssigneeFilter={showAssigneeFilter}
+        showDepartmentFilter={showDepartmentFilter}
+        showIssueFilter={showIssueFilter}
+        showAssignedFilter={showAssignedFilter}
+      />
 
       {showBulkActions && selected.length > 0 && (
         <Toolbar sx={{ bgcolor: "action.selected", borderRadius: 1, mb: 1, flexWrap: "wrap", gap: 1 }}>
@@ -165,7 +196,9 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
                 {showBulkActions && <TableCell padding="checkbox" />}
                 <TableCell>Ticket #</TableCell>
                 <TableCell>Title</TableCell>
-                <TableCell>Department</TableCell>
+                {showRequester && <TableCell>Requester</TableCell>}
+                {showIssue && <TableCell>Issue</TableCell>}
+                {showDepartment && <TableCell>Department</TableCell>}
                 {showAssignee && <TableCell>Assignee</TableCell>}
                 <TableCell>Priority</TableCell>
                 <TableCell>
@@ -195,8 +228,22 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
                     </MuiLink>
                   </TableCell>
                   <TableCell sx={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</TableCell>
-                  <TableCell>{t.toDepartment?.name || "—"}</TableCell>
-                  {showAssignee && <TableCell>{t.assignee?.name || "—"}</TableCell>}
+                  {showRequester && <TableCell>{t.requester?.name || "—"}</TableCell>}
+                  {showIssue && (
+                    <TableCell>
+                      {t.issue ? (t.issue.isOther ? (t.customIssueText || t.issue.name) : t.issue.name) : "—"}
+                    </TableCell>
+                  )}
+                  {showDepartment && <TableCell>{t.toDepartment?.name || "—"}</TableCell>}
+                  {showAssignee && (
+                    <TableCell>
+                      {t.assignee?.name || (
+                        highlightUnassigned
+                          ? <Chip size="small" label="Unassigned" color="warning" variant="outlined" />
+                          : "—"
+                      )}
+                    </TableCell>
+                  )}
                   <TableCell><PriorityBadge name={t.priority.name} color={t.priority.color} /></TableCell>
                   <TableCell><StatusBadge status={t.status} /></TableCell>
                   <TableCell>{format(new Date(t.createdAt), "MMM d, yyyy")}</TableCell>

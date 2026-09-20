@@ -12,6 +12,16 @@ async function createIssue(actorId, { departmentId, name, isOther }) {
 }
 
 async function updateIssue(actorId, id, { name, isActive }) {
+  const existing = await prisma.issue.findUnique({ where: { id } });
+  if (!existing) throw new ApiError(404, "Issue not found");
+
+  // The "Others" fallback must always stay selectable — never let it be
+  // deactivated out of the ticket form's issue dropdown (name is fine to
+  // rename, since createTicket's Others handling keys off isOther, not name).
+  if (existing.isOther && isActive === false) {
+    throw new ApiError(400, 'The "Others" fallback issue must always remain active.');
+  }
+
   const data = {};
   if (name !== undefined) data.name = name;
   if (isActive !== undefined) data.isActive = isActive;
@@ -22,6 +32,12 @@ async function updateIssue(actorId, id, { name, isActive }) {
 }
 
 async function deleteIssue(actorId, id) {
+  const existing = await prisma.issue.findUnique({ where: { id } });
+  if (!existing) throw new ApiError(404, "Issue not found");
+  if (existing.isOther) {
+    throw new ApiError(400, 'The "Others" fallback issue cannot be deleted — every department must always have one.');
+  }
+
   const inUse = await prisma.ticket.count({ where: { issueId: id } });
   if (inUse > 0) throw new ApiError(409, "Cannot delete an issue that has tickets. Deactivate it instead.");
 

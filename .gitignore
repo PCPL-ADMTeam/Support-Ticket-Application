@@ -7,3 +7,7 @@ uploads/*
 !uploads/.gitkeep
 *.log
 .DS_Store
+server/uploads/
+test-email.js
+.postman/
+postman/

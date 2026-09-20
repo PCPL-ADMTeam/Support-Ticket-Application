@@ -6,7 +6,8 @@ const createTicketValidator = [
   body("categoryId").optional({ nullable: true }).isString(),
   body("priorityId").notEmpty().withMessage("Priority is required"),
   body("toDepartmentId").notEmpty().withMessage("Department is required"),
-  body("managerId").notEmpty().withMessage("Manager is required"),
+  // managerId is never taken from the client — it's derived server-side from
+  // the selected department's AGENT manager (see ticket.service#createTicket).
   body("issueId").notEmpty().withMessage("Issue is required"),
   body("customIssueText").optional({ nullable: true }).isString(),
   body("assigneeId").optional({ nullable: true }).isString(),
@@ -43,6 +44,9 @@ const bulkUpdateValidator = [
 const listTicketsValidator = [
   query("page").optional().isInt({ min: 1 }),
   query("limit").optional().isInt({ min: 1, max: 100 }),
+  query("departmentId").optional().isString(),
+  query("issueId").optional().isString(),
+  query("scope").optional().isIn(["created", "assigned"]),
 ];
 
 module.exports = {

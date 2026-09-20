@@ -78,11 +78,16 @@ npm run dev                 # starts on http://localhost:5173
 | Role | Email | Password |
 |---|---|---|
 | Admin | `admin@helpdesk.local` | `Admin@12345` |
-| Agent | `alex.agent@helpdesk.local` | `Agent@12345` |
+| Agent (IT department manager) | `alex.agent@helpdesk.local` | `Agent@12345` |
 | Agent | `sam.support@helpdesk.local` | `Agent@12345` |
 | End User | `jamie.user@helpdesk.local` | `User@12345` |
 | End User | `riley.requester@helpdesk.local` | `User@12345` |
-| Manager | `it.manager@helpdesk.local` (and one per department) | `Manager@12345` |
+
+There is no separate "Manager" role or manager-only accounts — a department
+manager is just an existing Agent with `isManager: true`, selectable as a
+ticket's Manager for their department (see the "Is a department manager"
+toggle on the admin Users page). They log in with the same Agent
+credentials as any other agent.
 
 Change `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` in `server/.env` before
 seeding a non-dev environment.

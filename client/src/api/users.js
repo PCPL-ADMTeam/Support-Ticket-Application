@@ -6,6 +6,8 @@ export const usersApi = {
   create: (payload) => api.post("/users", payload),
   update: (id, payload) => api.patch(`/users/${id}`, payload),
   deactivate: (id) => api.delete(`/users/${id}`),
+  activate: (id) => api.patch(`/users/${id}`, { isActive: true }),
+  remove: (id) => api.delete(`/users/${id}/permanent`),
   updateOwnProfile: (payload) => api.patch("/users/me/profile", payload),
-  assignableAgents: () => api.get("/users/assignable-agents"),
+  assignableAgents: (params) => api.get("/users/assignable-agents", { params }),
 };
