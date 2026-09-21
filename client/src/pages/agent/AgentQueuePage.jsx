@@ -16,7 +16,6 @@ export default function AgentQueuePage() {
       showAssignedFilter
       showDepartment={false}
       highlightUnassigned
-      newTicketPath="/agent/new-ticket"
     />
   );
 }

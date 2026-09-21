@@ -32,7 +32,19 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
-  const scope = SCOPES[tab];
+
+  // ADMIN ("full") is the system-wide administrator — "Raised by Me" /
+  // "Assigned to Me" is a personal-workspace concept that only makes sense
+  // for someone whose dashboard is about their OWN tickets (Agent/User).
+  // Previously this tab was forced on for every variant, including Admin,
+  // whose dashboard defaulted to scope="created" (tickets the admin
+  // account itself raised) instead of the system-wide total — e.g. showing
+  // "9" instead of the real 59 rows in `tickets`. Omitting `scope` entirely
+  // for Admin lets dashboard.service.js's existing scopeWhereForTab fall
+  // through to scopeWhereForUser(user), which is already correctly
+  // unrestricted for ADMIN — no backend change was needed for this.
+  const showPersonalScopeTabs = variant !== "full";
+  const scope = showPersonalScopeTabs ? SCOPES[tab] : undefined;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -46,14 +58,14 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
     load();
   }, [load]);
 
-  // BUG FIX: this previously forwarded only `params` (e.g. { status: "OPEN" }),
-  // dropping the active "Raised by Me" / "Assigned to Me" tab entirely — so
-  // clicking any KPI/chart under the "Assigned to Me" tab landed on the
-  // ticket list with no scope at all and showed every ticket the user can
-  // see, not just the ones assigned to them. `scope` must always ride along
-  // so the destination list (TicketsListPage, via ticket.service.js#
-  // listTickets's `scope` filter) stays on the same tab the user was on.
-  const goToTickets = (params) => navigate(`${ticketsPath}?${new URLSearchParams({ scope, ...params }).toString()}`);
+  // `scope` only ever rides along when this dashboard actually has a
+  // Raised-by-Me/Assigned-to-Me concept (Agent/User) — Admin's KPIs/charts
+  // never carry a scope, so clicking into the ticket list correctly lands
+  // on the full, unscoped system-wide list.
+  const goToTickets = (params) => {
+    const merged = scope ? { scope, ...params } : { ...params };
+    navigate(`${ticketsPath}?${new URLSearchParams(merged).toString()}`);
+  };
 
   return (
     <Stack spacing={3}>
@@ -62,10 +74,12 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
         <DateRangeFilter days={days} onChange={setDays} />
       </Box>
 
-      <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ borderBottom: 1, borderColor: "divider" }}>
-        <Tab label="Raised by Me" id="dashboard-raised-by-me-tab" />
-        <Tab label="Assigned to Me" id="dashboard-assigned-to-me-tab" />
-      </Tabs>
+      {showPersonalScopeTabs && (
+        <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ borderBottom: 1, borderColor: "divider" }}>
+          <Tab label="Raised by Me" id="dashboard-raised-by-me-tab" />
+          <Tab label="Assigned to Me" id="dashboard-assigned-to-me-tab" />
+        </Tabs>
+      )}
 
       {loading || !stats ? (
         <LoadingState minHeight={400} />

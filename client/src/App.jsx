@@ -7,6 +7,7 @@ import ProtectedRoute, { homeForRole } from "./routes/ProtectedRoute";
 import LoginPage from "./pages/auth/LoginPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import TicketDetailPage from "./pages/TicketDetailPage";
+import EditTicketPage from "./pages/EditTicketPage";
 
 import RoleAwareLayout from "./components/layout/RoleAwareLayout";
 import AdminLayout from "./components/layout/AdminLayout";
@@ -19,7 +20,6 @@ import UsersPage from "./pages/admin/UsersPage";
 import TeamsPage from "./pages/admin/TeamsPage";
 import DepartmentsPage from "./pages/admin/DepartmentsPage";
 import DepartmentDetailsPage from "./pages/admin/DepartmentDetailsPage";
-import AdminNewTicketPage from "./pages/admin/AdminNewTicketPage";
 import EmailTemplatesPage from "./pages/admin/EmailTemplatesPage";
 import SlaPage from "./pages/admin/SlaPage";
 import AuditLogsPage from "./pages/admin/AuditLogsPage";
@@ -27,7 +27,6 @@ import SettingsPage from "./pages/admin/SettingsPage";
 
 import AgentDashboardPage from "./pages/agent/AgentDashboardPage";
 import AgentQueuePage from "./pages/agent/AgentQueuePage";
-import AgentNewTicketPage from "./pages/agent/AgentNewTicketPage";
 
 import PortalDashboardPage from "./pages/portal/PortalDashboardPage";
 import NewTicketPage from "./pages/portal/NewTicketPage";
@@ -52,6 +51,7 @@ export default function App() {
                 <Route element={<RoleAwareLayout />}>
                   <Route path="/" element={<RootRedirect />} />
                   <Route path="/tickets/:id" element={<TicketDetailPage />} />
+                  <Route path="/tickets/:id/edit" element={<EditTicketPage />} />
                 </Route>
               </Route>
 
@@ -60,7 +60,6 @@ export default function App() {
                 <Route path="/admin" element={<AdminLayout />}>
                   <Route index element={<AdminDashboardPage />} />
                   <Route path="tickets" element={<AllTicketsPage />} />
-                  <Route path="new-ticket" element={<AdminNewTicketPage />} />
                   <Route path="users" element={<UsersPage />} />
                   <Route path="teams" element={<TeamsPage />} />
                   <Route path="departments" element={<DepartmentsPage />} />
@@ -77,7 +76,6 @@ export default function App() {
                 <Route path="/agent" element={<AgentLayout />}>
                   <Route index element={<AgentDashboardPage />} />
                   <Route path="queue" element={<AgentQueuePage />} />
-                  <Route path="new-ticket" element={<AgentNewTicketPage />} />
                 </Route>
               </Route>
 

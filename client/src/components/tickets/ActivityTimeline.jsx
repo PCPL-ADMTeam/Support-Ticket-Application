@@ -12,6 +12,10 @@ const ACTION_LABELS = {
   DEPARTMENT_CHANGE: "Department changed",
   MANAGER_CHANGE: "Manager changed",
   ISSUE_CHANGE: "Issue changed",
+  TICKET_DETAILS_UPDATED: "Ticket details updated",
+  RESOLUTION_NOTES: "Resolution notes",
+  ON_HOLD_REASON: "On-hold reason",
+  CLOSED_REASON: "Closed reason",
   COMMENTED: "Commented",
   BULK_UPDATE: "Bulk updated",
 };
@@ -21,6 +25,9 @@ const ACTION_COLORS = {
   STATUS_CHANGE: "warning",
   ASSIGNED: "info",
   COMMENTED: "grey",
+  RESOLUTION_NOTES: "success",
+  ON_HOLD_REASON: "warning",
+  CLOSED_REASON: "grey",
 };
 
 export default function ActivityTimeline({ history }) {
@@ -44,8 +51,11 @@ export default function ActivityTimeline({ history }) {
                 {ACTION_LABELS[h.action] || h.action} <Typography component="span" variant="body2" color="text.secondary">by {h.user.name}</Typography>
               </Typography>
               {h.fieldName && (
-                <Typography variant="caption" color="text.secondary">
-                  {h.oldValue || "—"} → {h.newValue || "—"}
+                <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
+                  {/* A note-only entry (RESOLUTION_NOTES/ON_HOLD_REASON/
+                      CLOSED_REASON) has no "before" value — show the note
+                      text on its own rather than a confusing "— → text". */}
+                  {h.oldValue ? `${h.oldValue} → ${h.newValue || "—"}` : h.newValue || "—"}
                 </Typography>
               )}
             </TimelineContent>

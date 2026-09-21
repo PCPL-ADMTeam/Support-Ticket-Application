@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import {
   Grid,
   Paper,
@@ -9,12 +9,14 @@ import {
   TextField,
   MenuItem,
   Chip,
+  IconButton,
   Button,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
 } from "@mui/material";
+import EditIcon from "@mui/icons-material/Edit";
 import { format } from "date-fns";
 import { useSnackbar } from "notistack";
 import { ticketsApi } from "../api/tickets";
@@ -43,9 +45,45 @@ const VALID_TRANSITIONS = {
   REOPENED: ["IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED"],
 };
 
+// Description box height — matches the ~340px used by the dashboard's own
+// chart cards (StatusPieChart/PriorityBarChart) elsewhere in this app, so a
+// long rich-text description scrolls internally rather than growing the
+// whole page.
+const DESCRIPTION_MAX_HEIGHT = 340;
+
+// RESOLVED/ON_HOLD/CLOSED each need a persisted explanation — the backend
+// (ticket.service.js#updateTicket) rejects the transition without one
+// regardless of what this dialog does, so this is purely the UX for
+// collecting it; validation here just gives an immediate, friendly error
+// instead of a round-trip 400.
+const REASON_CONFIG = {
+  RESOLVED: {
+    field: "resolutionNotes",
+    label: "Resolution Notes",
+    placeholder: "Explain how the issue was resolved...",
+    requiredMessage: "Resolution notes are required when resolving a ticket.",
+    confirmLabel: "Mark as Resolved",
+  },
+  ON_HOLD: {
+    field: "onHoldReason",
+    label: "On-Hold Reason",
+    placeholder: "Explain why this ticket is being put on hold",
+    requiredMessage: "On-hold reason is required.",
+    confirmLabel: "Put on Hold",
+  },
+  CLOSED: {
+    field: "closedReason",
+    label: "Closed Reason",
+    placeholder: "Explain why this ticket is being closed...",
+    requiredMessage: "Closed reason is required.",
+    confirmLabel: "Close Ticket",
+  },
+};
+
 export default function TicketDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const { enqueueSnackbar } = useSnackbar();
 
   const [ticket, setTicket] = useState(null);
@@ -58,6 +96,8 @@ export default function TicketDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState("");
   const [draftPriorityId, setDraftPriorityId] = useState("");
+  const [draftReason, setDraftReason] = useState("");
+  const [reasonError, setReasonError] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
 
   const [assignOpen, setAssignOpen] = useState(false);
@@ -66,10 +106,10 @@ export default function TicketDetailPage() {
 
   // Permission flags below are UI-only conveniences that mirror
   // ticket.service.js#updateTicket's actual rules (isManagerOrAdmin,
-  // canDriveWorkflow) so the right controls simply aren't rendered — they
-  // are NOT the source of truth. The backend re-checks role, department
-  // membership, and assignee eligibility on every PATCH regardless of what
-  // this page shows or hides.
+  // canDriveWorkflow, canRequesterEditDetails) so the right controls simply
+  // aren't rendered — they are NOT the source of truth. The backend
+  // re-checks role, ownership, department membership, and ticket status on
+  // every PATCH regardless of what this page shows or hides.
   const isAdmin = user.role.name === "ADMIN";
   const isAgent = user.role.name === "AGENT";
   const isStaff = isAdmin || isAgent;
@@ -85,6 +125,10 @@ export default function TicketDetailPage() {
   const canManage = isAdmin || (isAgent && Boolean(user.departmentId) && ticket?.toDepartmentId === user.departmentId);
   const canDriveStatus = canManage || isAssignedToMe;
   const nextStatusOptions = ticket ? VALID_TRANSITIONS[ticket.status] || [] : [];
+  // Only the requester of the ticket, and only while it's still open —
+  // never merely because the current user is the assignee. Mirrors
+  // ticket.service.js#updateTicket's canRequesterEditDetails exactly.
+  const canEditAsRequester = isOwner && Boolean(ticket) && !["RESOLVED", "CLOSED"].includes(ticket.status);
 
   const load = useCallback(async () => {
     const { data } = await ticketsApi.getById(id);
@@ -137,16 +181,34 @@ export default function TicketDetailPage() {
   const openEditDialog = () => {
     setDraftStatus(ticket.status);
     setDraftPriorityId(ticket.priority.id);
+    setDraftReason("");
+    setReasonError("");
     setEditOpen(true);
+  };
+
+  const handleStatusChange = (value) => {
+    setDraftStatus(value);
+    setDraftReason("");
+    setReasonError("");
   };
 
   const handleSaveEdit = async () => {
     const payload = {};
-    if (draftStatus !== ticket.status) payload.status = draftStatus;
+    const statusChanged = draftStatus !== ticket.status;
+    if (statusChanged) payload.status = draftStatus;
     // Priority is a manager/admin-only field server-side — never sent for a
     // USER assignee, who only ever sees the Status field in this same
     // dialog (see the dialog's JSX below).
     if (canManage && draftPriorityId !== ticket.priority.id) payload.priorityId = draftPriorityId;
+
+    const reasonConfig = statusChanged ? REASON_CONFIG[draftStatus] : null;
+    if (reasonConfig) {
+      if (!draftReason.trim()) {
+        setReasonError(reasonConfig.requiredMessage);
+        return;
+      }
+      payload[reasonConfig.field] = draftReason.trim();
+    }
 
     if (Object.keys(payload).length === 0) {
       setEditOpen(false);
@@ -188,35 +250,50 @@ export default function TicketDetailPage() {
   const canReopen = isOwner && !isStaff && ["RESOLVED", "CLOSED"].includes(ticket.status);
 
   return (
-    <Box>
-      <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ sm: "center" }} spacing={1} sx={{ mb: 2 }}>
-        <Typography variant="h4">{ticket.ticketNumber}</Typography>
-
-        {canReopen && (
-          <Button variant="outlined" onClick={() => applyUpdate({ status: "REOPENED" })}>
-            Reopen Ticket
-          </Button>
-        )}
+    <Box sx={{ maxWidth: 1200, mx: "auto" }}>
+      {/* Combined heading — ticket number and title together, so the
+          ticket's identity and subject are read as one line instead of two
+          separated blocks — with the requester-edit icon at the far right. */}
+      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1} sx={{ mb: 3 }}>
+        <Typography variant="h4" sx={{ wordBreak: "break-word" }}>
+          {ticket.ticketNumber} - {ticket.title}
+        </Typography>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ flexShrink: 0 }}>
+          {canReopen && (
+            <Button variant="outlined" onClick={() => applyUpdate({ status: "REOPENED" })}>
+              Reopen Ticket
+            </Button>
+          )}
+          {canEditAsRequester && (
+            <IconButton onClick={() => navigate(`/tickets/${id}/edit`)} aria-label="Edit ticket" title="Edit ticket">
+              <EditIcon />
+            </IconButton>
+          )}
+        </Stack>
       </Stack>
 
       <Grid container spacing={3}>
-        <Grid item xs={12} md={8}>
+        {/* LEFT — main ticket content. `order` puts this second on mobile
+            (xs) so the compact info panel appears right after the header,
+            per the required mobile stacking order, while staying visually
+            on the left on desktop (md+). */}
+        <Grid item xs={12} md={8} sx={{ order: { xs: 2, md: 1 } }}>
           <Stack spacing={3}>
-            <Box>
-              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>Title</Typography>
-              <Typography variant="body1">{ticket.title}</Typography>
-            </Box>
-
-            <Box>
-              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>Description</Typography>
+            {/* Description — its own card, visually separated from the
+                metadata. Long descriptions scroll internally rather than
+                growing the page indefinitely; nothing is truncated. */}
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>Description</Typography>
               {ticket.description?.trim() ? (
-                <SafeHtml html={ticket.description} />
+                <Box sx={{ maxHeight: DESCRIPTION_MAX_HEIGHT, overflowY: "auto", pr: 1 }}>
+                  <SafeHtml html={ticket.description} />
+                </Box>
               ) : (
                 <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic" }}>
                   No description provided.
                 </Typography>
               )}
-            </Box>
+            </Paper>
 
             <AttachmentList attachments={ticket.attachments} />
 
@@ -231,22 +308,16 @@ export default function TicketDetailPage() {
           </Stack>
         </Grid>
 
-        <Grid item xs={12} md={4}>
+        {/* RIGHT — compact ticket information panel. Deliberately smaller/
+            denser than the left column; nothing here duplicates content
+            beyond the badges the rest of the app already uses for
+            Status/Priority. */}
+        <Grid item xs={12} md={4} sx={{ order: { xs: 1, md: 2 } }}>
           <Paper variant="outlined" sx={{ p: 2 }}>
-            <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
-              <Typography variant="subtitle1" fontWeight={700}>Details</Typography>
-              <Stack direction="row" spacing={1}>
-                <StatusBadge status={ticket.status} size="medium" />
-                <PriorityBadge name={ticket.priority.name} color={ticket.priority.color} size="medium" />
-              </Stack>
-            </Stack>
+            <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 2 }}>Ticket Information</Typography>
 
-            {/* Action area — AGENT/ADMIN get Edit + Assign/Reassign; a USER
-                assignee gets a lighter "Update Status" affordance instead;
-                a USER who only raised the ticket (not assigned) gets none
-                of this, matching the read-only/comment-only business rule. */}
             {(canManage || isAssignedToMe) && (
-              <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
                 {canManage && (
                   <Button size="small" variant="outlined" onClick={openEditDialog}>
                     Edit Ticket
@@ -266,9 +337,16 @@ export default function TicketDetailPage() {
             )}
 
             <Stack spacing={2}>
-              <InfoRow label="Requester" value={`${ticket.requester.name} (${ticket.requester.email})`} />
+              <InfoRow label="Status" value={<StatusBadge status={ticket.status} />} />
+              <InfoRow label="Priority" value={<PriorityBadge name={ticket.priority.name} color={ticket.priority.color} />} />
+              <InfoRow label="Department" value={ticket.toDepartment?.name || "—"} />
               <InfoRow
-                label="Assignee"
+                label="Issue"
+                value={ticket.issue ? (ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name) : "—"}
+              />
+              <InfoRow label="Raised By" value={ticket.requester.name} />
+              <InfoRow
+                label="Assigned To"
                 value={
                   <Stack direction="row" alignItems="center" spacing={1}>
                     <span>{ticket.assignee?.name || "Unassigned"}</span>
@@ -276,12 +354,7 @@ export default function TicketDetailPage() {
                   </Stack>
                 }
               />
-              <InfoRow
-                label="Issue"
-                value={ticket.issue ? (ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name) : "—"}
-              />
-              <InfoRow label="Department" value={ticket.toDepartment?.name || "—"} />
-              <InfoRow label="Raised Date" value={format(new Date(ticket.createdAt), "MMM d, yyyy h:mm a")} />
+              <InfoRow label="Created" value={format(new Date(ticket.createdAt), "MMM d, yyyy h:mm a")} />
             </Stack>
           </Paper>
         </Grid>
@@ -290,7 +363,8 @@ export default function TicketDetailPage() {
       {/* Edit Ticket — Status is available to whoever may drive the
           ticket's workflow (manager/admin OR the assignee); Priority is
           manager/admin only. Never shown to a USER who is merely the
-          requester. */}
+          requester (they get the separate edit-icon flow instead, which
+          covers issue/priority/description via EditTicketPage/TicketForm). */}
       <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>{canManage ? `Edit ${ticket.ticketNumber}` : `Update Status — ${ticket.ticketNumber}`}</DialogTitle>
         <DialogContent>
@@ -300,7 +374,7 @@ export default function TicketDetailPage() {
               size="small"
               label="Status"
               value={draftStatus}
-              onChange={(e) => setDraftStatus(e.target.value)}
+              onChange={(e) => handleStatusChange(e.target.value)}
               disabled={!canDriveStatus}
             >
               <MenuItem value={ticket.status}>{ticket.status.replace("_", " ")} (current)</MenuItem>
@@ -320,11 +394,30 @@ export default function TicketDetailPage() {
                 {priorities.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
               </TextField>
             )}
+
+            {/* RESOLVED/ON_HOLD/CLOSED only — normal transitions (OPEN,
+                IN_PROGRESS, REOPENED) keep the existing one-click behavior. */}
+            {draftStatus !== ticket.status && REASON_CONFIG[draftStatus] && (
+              <TextField
+                required
+                multiline
+                minRows={3}
+                size="small"
+                label={REASON_CONFIG[draftStatus].label}
+                placeholder={REASON_CONFIG[draftStatus].placeholder}
+                value={draftReason}
+                onChange={(e) => { setDraftReason(e.target.value); setReasonError(""); }}
+                error={Boolean(reasonError)}
+                helperText={reasonError}
+              />
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleSaveEdit} disabled={savingEdit}>Save</Button>
+          <Button variant="contained" onClick={handleSaveEdit} disabled={savingEdit}>
+            {draftStatus !== ticket.status && REASON_CONFIG[draftStatus] ? REASON_CONFIG[draftStatus].confirmLabel : "Save"}
+          </Button>
         </DialogActions>
       </Dialog>
 

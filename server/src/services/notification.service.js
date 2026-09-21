@@ -1,6 +1,7 @@
 const prisma = require("../config/prisma");
 const emailService = require("./email.service");
 const emailTemplateService = require("./emailTemplate.service");
+const { findActiveDepartmentManager } = require("../utils/departmentManager");
 
 // Used ONLY when the PostgreSQL EmailTemplate for `eventKey` is missing,
 // inactive, or fails to render (Step 7) — a minimal safety net so the
@@ -63,9 +64,40 @@ async function notify({ eventKey, userId, ticketId, type, ticket, comment, statu
   try {
     const email = await emailService.resolveUserEmail(userId);
     if (!email) return;
-    await emailService.sendMail({ to: email, subject, html: body });
+
+    // CC the ticket's CURRENT department's active AGENT manager on every
+    // one of these ticket lifecycle emails — applied centrally here so
+    // none of ticket.service.js's ~15 call sites into notify() needed to
+    // change. "Current" department, not whatever the ticket's stored
+    // `manager`/`managerId` snapshot says, since that can go stale if the
+    // department's manager changes after the ticket was created — reuses
+    // the exact same lookup createTicket already uses to derive a manager
+    // in the first place. Never added if it would duplicate the primary
+    // recipient, and never fails the email if no manager exists.
+    const cc = await resolveDepartmentManagerCc(ticket, email);
+
+    await emailService.sendMail({ to: email, cc, subject, html: body });
   } catch (err) {
     console.error(`[notifications] Failed to email user ${userId}:`, err.message);
+  }
+}
+
+async function resolveDepartmentManagerCc(ticket, primaryEmail) {
+  const departmentId = ticket?.toDepartmentId || ticket?.toDepartment?.id;
+  if (!departmentId) return undefined;
+
+  try {
+    const manager = await findActiveDepartmentManager(departmentId);
+    if (!manager) {
+      console.log(`[notifications] No active department manager found for department ${departmentId} — sending without CC.`);
+      return undefined;
+    }
+    const managerEmail = await emailService.resolveUserEmail(manager.id);
+    if (!managerEmail || managerEmail.toLowerCase() === primaryEmail.toLowerCase()) return undefined;
+    return managerEmail;
+  } catch (err) {
+    console.error(`[notifications] Failed to resolve department manager CC for department ${departmentId}:`, err.message);
+    return undefined;
   }
 }
 

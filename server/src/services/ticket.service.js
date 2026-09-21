@@ -5,6 +5,7 @@ const { formatDepartmentTicketNumber } = require("../utils/ticketNumber");
 const { recordAudit } = require("../utils/audit");
 const notificationService = require("./notification.service");
 const { sanitizeRichText } = require("../utils/sanitize");
+const { findActiveDepartmentManager } = require("../utils/departmentManager");
 
 const ticketListInclude = {
   category: { select: { id: true, name: true } },
@@ -200,10 +201,7 @@ async function createTicket(user, payload, files = []) {
     // as this department's manager (Admin-configured via the Users page).
     // A department with no manager yet simply routes with managerId=null;
     // we never fall back to a manager from a different department.
-    prisma.user.findFirst({
-      where: { departmentId: toDepartmentId, isManager: true, isActive: true, role: { name: "AGENT" } },
-      orderBy: { createdAt: "asc" },
-    }),
+    findActiveDepartmentManager(toDepartmentId),
     prisma.issue.findUnique({ where: { id: issueId } }),
   ]);
   if (!priority) throw new ApiError(400, "Invalid priority");
@@ -332,8 +330,25 @@ async function updateTicket(user, id, payload) {
   const isManagerOrAdmin = user.role.name === "ADMIN" || user.role.name === "AGENT";
   const canDriveWorkflow = isManagerOrAdmin || isAssignee;
 
+  // The requester may edit the ORIGINAL content of a ticket they raised
+  // (priority/issue/description/title) — never merely because they're the
+  // assignee, and never once the ticket has reached a terminal state
+  // (mirrors the same RESOLVED/CLOSED gate the owner-reopen rule below
+  // already uses). This is a separate authorization path from
+  // isManagerOrAdmin, converging on the same handful of "content" fields
+  // further down — never on assignment/routing/status, which stay
+  // exclusively behind isManagerOrAdmin or canDriveWorkflow.
+  const canRequesterEditDetails = isOwner && !["RESOLVED", "CLOSED"].includes(ticket.status);
+  // Distinguishes "the requester used their edit-my-own-ticket path" from
+  // "a manager/admin changed priority via the existing Edit Ticket dialog"
+  // — only the former should produce the new TICKET_DETAILS_UPDATED history
+  // marker/email; the latter's existing behavior (silent priority-only
+  // update, no email) must stay exactly as it was before this change.
+  const isRequesterEditPath = !isManagerOrAdmin && canRequesterEditDetails;
+
   const data = {};
   const historyEntries = [];
+  let requesterContentChanged = false;
 
   if (payload.status !== undefined && payload.status !== ticket.status) {
     // The requester may only reopen their own resolved/closed ticket — every
@@ -347,14 +362,56 @@ async function updateTicket(user, id, payload) {
       throw new ApiError(400, `Cannot transition from ${ticket.status} to ${payload.status}`);
     }
 
+    // RESOLVED/ON_HOLD/CLOSED each require a persisted explanation —
+    // enforced here server-side regardless of role or caller, so a direct
+    // API request can never bypass it just because the frontend dialog
+    // that normally collects it wasn't used. Validated before any part of
+    // `data` is touched, so a rejected request leaves the ticket
+    // completely unchanged.
+    if (payload.status === "RESOLVED" && !payload.resolutionNotes?.trim()) {
+      throw new ApiError(400, "Resolution notes are required when resolving a ticket.");
+    }
+    if (payload.status === "ON_HOLD" && !payload.onHoldReason?.trim()) {
+      throw new ApiError(400, "On-hold reason is required.");
+    }
+    if (payload.status === "CLOSED" && !payload.closedReason?.trim()) {
+      throw new ApiError(400, "Closed reason is required.");
+    }
+
     data.status = payload.status;
-    if (payload.status === "RESOLVED") data.resolvedAt = new Date();
-    if (payload.status === "CLOSED") data.closedAt = new Date();
+    if (payload.status === "RESOLVED") {
+      data.resolvedAt = new Date();
+      data.resolutionNotes = payload.resolutionNotes.trim();
+    }
+    if (payload.status === "ON_HOLD") {
+      data.onHoldReason = payload.onHoldReason.trim();
+    }
+    if (payload.status === "CLOSED") {
+      data.closedAt = new Date();
+      data.closedReason = payload.closedReason.trim();
+    }
     if (payload.status === "REOPENED") {
       data.resolvedAt = null;
       data.closedAt = null;
     }
     historyEntries.push({ action: "STATUS_CHANGE", fieldName: "status", oldValue: ticket.status, newValue: payload.status });
+
+    // Distinct, permanent history entries for the reason text itself — kept
+    // separate from STATUS_CHANGE (which just records the transition) so
+    // reopening a ticket later never loses or overwrites this record; each
+    // occurrence is its own immutable TicketHistory row (see the comment on
+    // Ticket.resolutionNotes/onHoldReason/closedReason in schema.prisma —
+    // only the LATEST reason is kept on the ticket itself, but every past
+    // occurrence remains here).
+    if (payload.status === "RESOLVED") {
+      historyEntries.push({ action: "RESOLUTION_NOTES", fieldName: "resolutionNotes", newValue: data.resolutionNotes });
+    }
+    if (payload.status === "ON_HOLD") {
+      historyEntries.push({ action: "ON_HOLD_REASON", fieldName: "onHoldReason", newValue: data.onHoldReason });
+    }
+    if (payload.status === "CLOSED") {
+      historyEntries.push({ action: "CLOSED_REASON", fieldName: "closedReason", newValue: data.closedReason });
+    }
   }
 
   if (isManagerOrAdmin) {
@@ -367,11 +424,6 @@ async function updateTicket(user, id, payload) {
     if (payload.teamId !== undefined && payload.teamId !== ticket.teamId) {
       data.teamId = payload.teamId || null;
       historyEntries.push({ action: "TEAM_CHANGE", fieldName: "teamId", oldValue: ticket.teamId, newValue: payload.teamId });
-    }
-    if (payload.priorityId !== undefined && payload.priorityId !== ticket.priorityId) {
-      data.priorityId = payload.priorityId;
-      data.dueAt = await computeDueAt(payload.priorityId, ticket.createdAt);
-      historyEntries.push({ action: "PRIORITY_CHANGE", fieldName: "priorityId", oldValue: ticket.priorityId, newValue: payload.priorityId });
     }
     if (payload.categoryId !== undefined && payload.categoryId !== ticket.categoryId) {
       data.categoryId = payload.categoryId;
@@ -397,13 +449,67 @@ async function updateTicket(user, id, payload) {
       data.managerId = payload.managerId || null;
       historyEntries.push({ action: "MANAGER_CHANGE", fieldName: "managerId", oldValue: ticket.managerId, newValue: payload.managerId });
     }
+  }
+
+  // Content fields — priority, issue, description, title. Editable by
+  // staff (isManagerOrAdmin, exactly as before for priority/issue) OR by
+  // the requester editing their own still-open ticket
+  // (canRequesterEditDetails). Assignment/routing/status are NEVER part of
+  // this block — those stay exclusively above, gated by isManagerOrAdmin /
+  // canDriveWorkflow, so a requester can never use this path to reassign,
+  // reroute, or change status.
+  if (isManagerOrAdmin || canRequesterEditDetails) {
+    if (payload.priorityId !== undefined && payload.priorityId !== ticket.priorityId) {
+      data.priorityId = payload.priorityId;
+      data.dueAt = await computeDueAt(payload.priorityId, ticket.createdAt);
+      historyEntries.push({ action: "PRIORITY_CHANGE", fieldName: "priorityId", oldValue: ticket.priorityId, newValue: payload.priorityId });
+      if (isRequesterEditPath) requesterContentChanged = true;
+    }
     if (payload.issueId !== undefined && payload.issueId !== ticket.issueId) {
-      data.issueId = payload.issueId || null;
+      // The issue must still belong to this ticket's own destination
+      // department — never trusted from the client, mirrors
+      // assertValidAssignee's department check and createTicket's own
+      // issue validation. Accounts for toDepartmentId also changing in the
+      // same request (staff-only), same pattern assertValidAssignee uses.
+      const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
+      const newIssue = await prisma.issue.findUnique({ where: { id: payload.issueId } });
+      if (!newIssue || !newIssue.isActive || newIssue.departmentId !== targetDepartmentId) {
+        throw new ApiError(400, "Invalid issue for this ticket's department");
+      }
+      if (newIssue.isOther && !(payload.customIssueText ?? ticket.customIssueText)?.trim()) {
+        throw new ApiError(400, "Please describe the custom issue");
+      }
+      data.issueId = payload.issueId;
       historyEntries.push({ action: "ISSUE_CHANGE", fieldName: "issueId", oldValue: ticket.issueId, newValue: payload.issueId });
+      if (isRequesterEditPath) requesterContentChanged = true;
     }
     if (payload.customIssueText !== undefined && payload.customIssueText !== ticket.customIssueText) {
       data.customIssueText = payload.customIssueText || null;
+      if (isRequesterEditPath) requesterContentChanged = true;
     }
+    // Title is computed client-side from the selected issue (or the custom
+    // text for "Others"), exactly as createTicket already trusts it at
+    // creation time — never re-derived server-side here either.
+    if (payload.title !== undefined && payload.title.trim() && payload.title.trim() !== ticket.title) {
+      data.title = payload.title.trim();
+      if (isRequesterEditPath) requesterContentChanged = true;
+    }
+    if (payload.description !== undefined) {
+      const cleanDescription = sanitizeRichText(payload.description);
+      if (cleanDescription !== ticket.description) {
+        data.description = cleanDescription;
+        if (isRequesterEditPath) requesterContentChanged = true;
+      }
+    }
+  }
+
+  // One combined marker — "Ticket details updated by {requester}" — only
+  // for the requester's own edit-my-ticket path, kept separate from
+  // PRIORITY_CHANGE/ISSUE_CHANGE above so the existing staff Edit Ticket
+  // flow (priority-only, no email) is completely unaffected by this
+  // addition — its behavior before this change and after is identical.
+  if (requesterContentChanged) {
+    historyEntries.push({ action: "TICKET_DETAILS_UPDATED" });
   }
 
   if (Object.keys(data).length === 0) return getTicketById(user, id);
@@ -473,6 +579,29 @@ async function notifyOnUpdate(before, after, historyEntries, actor) {
         ticket: after,
         statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
       });
+    }
+
+    // Requester edited their own ticket's content. Unlike `recipients`
+    // above (which excludes the actor), the requester is always notified
+    // here even though they're normally the one making this specific edit
+    // — the same "confirm to the person who just acted" pattern
+    // createTicket already uses for TICKET_CREATED. The assignee/manager
+    // (if any, and not already the requester) get the same email as a
+    // heads-up; a local Set dedupes so nobody is emailed twice even if
+    // e.g. the requester also happens to be the assignee.
+    if (entry.action === "TICKET_DETAILS_UPDATED") {
+      const notified = new Set();
+      for (const userId of [after.requesterId, after.assigneeId, after.managerId]) {
+        if (!userId || notified.has(userId)) continue;
+        notified.add(userId);
+        await notificationService.notify({
+          eventKey: "TICKET_UPDATED",
+          userId,
+          ticketId: after.id,
+          type: "TICKET_UPDATED",
+          ticket: after,
+        });
+      }
     }
   }
 }

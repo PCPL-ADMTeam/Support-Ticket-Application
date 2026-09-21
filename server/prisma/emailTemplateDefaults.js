@@ -79,7 +79,13 @@ const emailTemplateDefaults = [
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
         row("Priority", "{{priority}}") +
-        row("Status", "{{status}}"),
+        row("Status", "{{status}}") +
+        // Only ever populated when this specific change moved the ticket
+        // to ON_HOLD (see emailTemplate.service.js#buildPlaceholders) —
+        // blank for every other status this event covers (OPEN/
+        // IN_PROGRESS), per the existing "unknown/missing placeholders
+        // render blank" behavior.
+        row("Reason", "{{onHoldReason}}"),
     ),
   },
   {
@@ -94,7 +100,7 @@ const emailTemplateDefaults = [
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Assignee", "{{assigneeName}}") +
-        row("Resolution", "{{resolution}}"),
+        row("Resolution Notes", "{{resolutionNotes}}"),
     ),
   },
   {
@@ -123,6 +129,21 @@ const emailTemplateDefaults = [
     ),
   },
   {
+    eventKey: "TICKET_UPDATED",
+    name: "Ticket Updated",
+    subject: "Ticket {{ticketNumber}} has been updated",
+    body: wrap(
+      "Changes have been made to your ticket.",
+      row("Ticket", "{{ticketNumber}}") +
+        row("Title", "{{title}}") +
+        row("Department", "{{department}}") +
+        row("Issue", "{{issue}}") +
+        row("Priority", "{{priority}}") +
+        row("Status", "{{status}}") +
+        row("Updated by", "{{requesterName}}"),
+    ),
+  },
+  {
     eventKey: "TICKET_CLOSED",
     name: "Ticket Closed",
     subject: "Ticket {{ticketNumber}} Closed",
@@ -133,7 +154,8 @@ const emailTemplateDefaults = [
         row("Department", "{{department}}") +
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
-        row("Assignee", "{{assigneeName}}"),
+        row("Assignee", "{{assigneeName}}") +
+        row("Closed Reason", "{{closedReason}}"),
     ),
   },
 ];

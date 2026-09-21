@@ -64,7 +64,27 @@ const PREVIEW_SAMPLE = {
   oldStatus: "OPEN",
   newStatus: "IN_PROGRESS",
   ticketLink: "https://helpdesk.local/tickets/sample-id",
+  resolutionNotes: "Power BI license was reassigned and access was verified.",
+  closedReason: "Issue was resolved and confirmed by the requester.",
+  // Deliberately blank — mirrors emailTemplate.service.js#buildPlaceholders
+  // only ever populating onHoldReason when the change is actually TO
+  // ON_HOLD (this sample's newStatus above is IN_PROGRESS). Combined with
+  // stripEmptyLabeledRows below, this lets the TICKET_STATUS_CHANGED
+  // preview show exactly what a real OPEN/IN_PROGRESS email looks like:
+  // no empty "Reason" row.
+  onHoldReason: "",
 };
+
+// Mirrors emailTemplate.service.js#stripEmptyLabeledRows exactly, so the
+// preview never shows a blank labeled row the real email wouldn't send
+// either — see that function's comment for why this exists instead of a
+// template engine.
+function stripEmptyLabeledRows(html) {
+  // [^<]* (not .*?) for the label cell — see the identical helper in
+  // emailTemplate.service.js for why a plain `.*?` would incorrectly span
+  // across row boundaries and strip more than just the one empty row.
+  return html.replace(/<tr>\s*<td[^>]*>[^<]*<\/td>\s*<td[^>]*>\s*<\/td>\s*<\/tr>/g, "");
+}
 
 function renderPreview(str) {
   if (!str) return "";
@@ -266,7 +286,7 @@ function EditTemplateDialog({ template, placeholders, onClose, onSaved, onError 
                 <Box
                   sx={{ p: 2, bgcolor: "#fff", border: 1, borderColor: "divider", borderRadius: 1 }}
                   dangerouslySetInnerHTML={{
-                    __html: DOMPurify.sanitize(renderPreview(form.body), EMAIL_PREVIEW_SANITIZE_CONFIG),
+                    __html: DOMPurify.sanitize(stripEmptyLabeledRows(renderPreview(form.body)), EMAIL_PREVIEW_SANITIZE_CONFIG),
                   }}
                 />
               </Paper>

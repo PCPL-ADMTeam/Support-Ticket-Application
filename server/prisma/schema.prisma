@@ -248,6 +248,17 @@ model Ticket {
   resolvedAt     DateTime?
   closedAt       DateTime?
 
+  // Required, persisted reason text for the three status transitions that
+  // need an explanation (see ticket.service.js#updateTicket). Nullable
+  // because a ticket only ever has these once it's actually passed through
+  // that status — and only the LATEST occurrence is kept here (a ticket
+  // resolved twice keeps only the second note); the full history of every
+  // occurrence lives in TicketHistory instead (RESOLUTION_NOTES/
+  // ON_HOLD_REASON/CLOSED_REASON entries), which is never overwritten.
+  resolutionNotes String? @db.Text
+  onHoldReason    String? @db.Text
+  closedReason    String? @db.Text
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

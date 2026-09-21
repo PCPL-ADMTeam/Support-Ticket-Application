@@ -23,6 +23,7 @@ import "react-quill/dist/quill.snow.css";
 import { useAuth } from "../../context/AuthContext";
 import { departmentsApi } from "../../api/departments";
 import { prioritiesApi } from "../../api/catalog";
+import AttachmentList from "./AttachmentList";
 
 const MAX_ATTACHMENT_MB = 10;
 
@@ -99,8 +100,18 @@ const sectionSubtitleSx = {
 export default function TicketForm({
   onSubmit,
   submitting = false,
+  // "edit" reuses this exact form to let a ticket's own requester update
+  // the ticket's issue/priority/description (and add more attachments) —
+  // see EditTicketPage.jsx. Department is fixed once a ticket exists (its
+  // ticket number/manager are already derived from it — see
+  // ticket.service.js#createTicket's comment on stable ticket numbers), so
+  // it's shown read-only rather than as a picker in this mode.
+  mode = "create",
+  initialTicket = null,
+  onCancel = null,
 }) {
   const { user } = useAuth();
+  const isEdit = mode === "edit";
 
   const [departments, setDepartments] = useState([]);
   const [priorities, setPriorities] = useState([]);
@@ -120,13 +131,23 @@ export default function TicketForm({
       });
   }, []);
 
-  const [form, setForm] = useState({
-    priorityId: "",
-    toDepartmentId: "",
-    issueId: "",
-    customIssueText: "",
-    description: "",
-  });
+  const [form, setForm] = useState(() =>
+    isEdit && initialTicket
+      ? {
+          priorityId: initialTicket.priority.id,
+          toDepartmentId: initialTicket.toDepartment?.id || "",
+          issueId: initialTicket.issue?.id || "",
+          customIssueText: initialTicket.customIssueText || "",
+          description: initialTicket.description || "",
+        }
+      : {
+          priorityId: "",
+          toDepartmentId: "",
+          issueId: "",
+          customIssueText: "",
+          description: "",
+        }
+  );
 
   const [attachments, setAttachments] = useState([]);
   const [errors, setErrors] = useState({});
@@ -357,6 +378,24 @@ export default function TicketForm({
       ? form.customIssueText.trim()
       : selectedIssue?.name || "";
 
+    if (isEdit) {
+      // PATCH /tickets/:id only ever takes JSON (no multer on that route —
+      // see ticket.routes.js), so edits go through as a plain object; any
+      // newly-added attachment files are uploaded separately afterward via
+      // the existing POST /tickets/:id/attachments endpoint, same as
+      // comment attachments already do (see TicketDetailPage's
+      // handleAddComment). Existing attachments are left untouched.
+      const payload = {
+        title: ticketTitle,
+        description: form.description,
+        priorityId: form.priorityId,
+        issueId: form.issueId,
+        customIssueText: selectedIssue?.isOther ? form.customIssueText.trim() : "",
+      };
+      await onSubmit(payload, attachments);
+      return;
+    }
+
     const formData = new FormData();
 
     formData.append("title", ticketTitle);
@@ -429,7 +468,7 @@ export default function TicketForm({
             color: "text.primary",
           }}
         >
-          Raise a Ticket
+          {isEdit ? "Edit Ticket" : "Raise a Ticket"}
         </Typography>
 
         <Typography
@@ -439,8 +478,9 @@ export default function TicketForm({
             color: "text.secondary",
           }}
         >
-          Provide the details below to create a
-          support ticket.
+          {isEdit
+            ? "Update the issue, priority, or description of this ticket."
+            : "Provide the details below to create a support ticket."}
         </Typography>
       </Box>
 
@@ -603,29 +643,43 @@ export default function TicketForm({
                     Department
                   </Typography>
 
-                  <Autocomplete
-                    fullWidth
-                    size="small"
-                    loading={loadingOptions}
-                    options={departments}
-                    getOptionLabel={(d) => d.name}
-                    value={selectedDepartment}
-                    onChange={
-                      handleDepartmentChange
-                    }
-                    renderInput={(params) => (
-                      <TextField
-                        {...params}
-                        placeholder="Select department"
-                        error={Boolean(
-                          errors.toDepartmentId
-                        )}
-                        helperText={
-                          errors.toDepartmentId
-                        }
-                      />
-                    )}
-                  />
+                  {isEdit ? (
+                    // A ticket's department is fixed once raised — its
+                    // ticket number/manager are already derived from it
+                    // (see ticket.service.js#createTicket) — so this is
+                    // shown for context only, not editable here.
+                    <TextField
+                      fullWidth
+                      size="small"
+                      value={selectedDepartment?.name || ""}
+                      helperText="Fixed at creation — cannot be changed"
+                      InputProps={{ readOnly: true }}
+                    />
+                  ) : (
+                    <Autocomplete
+                      fullWidth
+                      size="small"
+                      loading={loadingOptions}
+                      options={departments}
+                      getOptionLabel={(d) => d.name}
+                      value={selectedDepartment}
+                      onChange={
+                        handleDepartmentChange
+                      }
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          placeholder="Select department"
+                          error={Boolean(
+                            errors.toDepartmentId
+                          )}
+                          helperText={
+                            errors.toDepartmentId
+                          }
+                        />
+                      )}
+                    />
+                  )}
                 </Box>
               </Stack>
 
@@ -814,9 +868,13 @@ export default function TicketForm({
                   ATTACHMENT
               ================================================= */}
 
+              {isEdit && initialTicket?.attachments?.length > 0 && (
+                <AttachmentList attachments={initialTicket.attachments} />
+              )}
+
               <Box>
                 <Typography sx={fieldLabelSx}>
-                  Attachment
+                  {isEdit ? "Add Attachment" : "Attachment"}
                 </Typography>
 
                 <Button
@@ -947,6 +1005,15 @@ export default function TicketForm({
                   gap: 1.5,
                 }}
               >
+                {isEdit && onCancel && (
+                  <Button
+                    onClick={onCancel}
+                    disabled={submitting}
+                    sx={{ py: 1.2, borderRadius: 2, textTransform: "none", fontWeight: 600 }}
+                  >
+                    Cancel
+                  </Button>
+                )}
                 <Button
                   type="submit"
                   variant="contained"
@@ -965,7 +1032,9 @@ export default function TicketForm({
                 >
                   {submitting
                     ? "Submitting..."
-                    : "Raise a Ticket"}
+                    : isEdit
+                      ? "Update Ticket"
+                      : "Raise a Ticket"}
                 </Button>
               </Box>
             </>

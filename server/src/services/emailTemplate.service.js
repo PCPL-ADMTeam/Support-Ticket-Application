@@ -29,6 +29,9 @@ const SUPPORTED_PLACEHOLDERS = [
   "oldStatus",
   "newStatus",
   "ticketLink",
+  "resolutionNotes",
+  "onHoldReason",
+  "closedReason",
 ];
 
 function stripHtml(value) {
@@ -64,6 +67,19 @@ function buildPlaceholders({ ticket, comment, recipientName, statusChange } = {}
     oldStatus: statusChange?.oldValue || "",
     newStatus: statusChange?.newValue || "",
     ticketLink: ticket ? `${env.clientUrl}/tickets/${ticket.id}` : "",
+    // TICKET_RESOLVED/TICKET_CLOSED only ever fire exactly when the ticket
+    // has just moved to that status, so reading straight off the ticket is
+    // always the current reason — no staleness risk.
+    resolutionNotes: ticket?.resolutionNotes || "",
+    closedReason: ticket?.closedReason || "",
+    // TICKET_STATUS_CHANGED, unlike the two above, is shared across
+    // multiple possible target statuses (OPEN/IN_PROGRESS/ON_HOLD) — so
+    // onHoldReason is scoped to "this specific change is the one that just
+    // set it to ON_HOLD", not just "whatever the ticket's stored
+    // onHoldReason happens to be right now". Without this guard, an
+    // OPEN/IN_PROGRESS status-changed email sent after a ticket's *prior*
+    // on-hold period would incorrectly show that old, unrelated reason.
+    onHoldReason: statusChange?.newValue === "ON_HOLD" ? ticket?.onHoldReason || "" : "",
   };
 }
 
@@ -93,6 +109,28 @@ function renderString(str, data, { escapeValues = false } = {}) {
     if (value === undefined || value === null) return "";
     return escapeValues ? escapeHtml(value) : String(value);
   });
+}
+
+// This renderer is deliberately plain string substitution with no
+// conditional blocks (see emailTemplateDefaults.js's `row()` helper — every
+// templated fact is one `<tr><td>Label</td><td>{{value}}</td></tr>`). That
+// means a placeholder that legitimately renders blank for a given event —
+// e.g. {{onHoldReason}} on an OPEN -> IN_PROGRESS status-changed email —
+// would otherwise leave a visible "Reason:" row with nothing after it.
+// Rather than inventing a template engine, this is a narrow, generic
+// post-substitution cleanup: any table row whose VALUE cell ended up
+// empty after rendering is dropped entirely. It only ever looks at the
+// row's already-rendered content, so it applies safely to every current
+// and future template — a row with real content is never touched.
+function stripEmptyLabeledRows(html) {
+  // [^<]* (not .*?) for the label cell's content is deliberate: `.` matches
+  // `<`/`>` too, so a non-greedy `.*?` here would happily cross a
+  // `</td><td>` boundary into a LATER row while backtracking, potentially
+  // swallowing every row between the first `<tr>` and the next one that
+  // happens to be empty — collapsing the whole table instead of just the
+  // one empty row. Labels are always plain text with no nested tags, so
+  // disallowing `<` keeps each match confined to a single row.
+  return html.replace(/<tr>\s*<td[^>]*>[^<]*<\/td>\s*<td[^>]*>\s*<\/td>\s*<\/tr>/g, "");
 }
 
 // Loads the EmailTemplate row for `eventKey`, verifies it's active, and
@@ -125,7 +163,7 @@ async function renderTemplate(eventKey, context) {
     const data = buildPlaceholders(context);
     return {
       subject: renderString(template.subject, data),
-      body: renderString(template.body, data, { escapeValues: true }),
+      body: stripEmptyLabeledRows(renderString(template.body, data, { escapeValues: true })),
     };
   } catch (err) {
     console.error(`[emailTemplate] Failed to render template for "${eventKey}":`, err.message);

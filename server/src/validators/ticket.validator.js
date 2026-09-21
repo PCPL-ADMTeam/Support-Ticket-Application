@@ -25,6 +25,18 @@ const updateTicketValidator = [
   body("managerId").optional({ nullable: true }).isString(),
   body("issueId").optional({ nullable: true }).isString(),
   body("customIssueText").optional({ nullable: true }).isString(),
+  // Requester-edit fields (ticket.service.js#updateTicket's
+  // canRequesterEditDetails path) — title/description of a ticket the
+  // caller raised themselves.
+  body("title").optional().trim().notEmpty().isLength({ max: 200 }),
+  body("description").optional().trim().notEmpty(),
+  // Type-checked here; the actual "required when status is
+  // RESOLVED/ON_HOLD/CLOSED" cross-field rule lives in
+  // ticket.service.js#updateTicket, alongside the other business rules
+  // that already depend on more than one payload field at once.
+  body("resolutionNotes").optional().isString(),
+  body("onHoldReason").optional().isString(),
+  body("closedReason").optional().isString(),
 ];
 
 const commentValidator = [

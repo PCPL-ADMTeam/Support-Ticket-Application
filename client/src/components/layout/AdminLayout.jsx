@@ -1,5 +1,4 @@
 import DashboardIcon from "@mui/icons-material/Dashboard";
-import AddCircleIcon from "@mui/icons-material/AddCircle";
 import ConfirmationNumberIcon from "@mui/icons-material/ConfirmationNumber";
 import PeopleIcon from "@mui/icons-material/People";
 import ApartmentIcon from "@mui/icons-material/Apartment";
@@ -14,9 +13,13 @@ import AppShell from "./AppShell";
 // User.departmentId). The Team/TeamMember models, API, and admin page still
 // exist for backward compatibility with any historical data, just unused by
 // this navigation and by ticket assignment.
+//
+// ADMIN never raises tickets — that's a USER/AGENT action — so there is
+// intentionally no "Raise a Ticket" nav item and no raiseTicketPath below
+// (which is what puts the "Create Ticket" button in the header for the
+// other layouts).
 const navItems = [
   { to: "/admin", label: "Dashboard", icon: <DashboardIcon />, end: true },
-  { to: "/admin/new-ticket", label: "Raise a Ticket", icon: <AddCircleIcon /> },
   { to: "/admin/tickets", label: "All Tickets", icon: <ConfirmationNumberIcon /> },
   { to: "/admin/users", label: "Users", icon: <PeopleIcon /> },
   { to: "/admin/departments", label: "Departments", icon: <ApartmentIcon /> },
@@ -27,5 +30,5 @@ const navItems = [
 ];
 
 export default function AdminLayout() {
-  return <AppShell navItems={navItems} ticketSearchPath="/admin/tickets" raiseTicketPath="/admin/new-ticket" />;
+  return <AppShell navItems={navItems} ticketSearchPath="/admin/tickets" />;
 }
