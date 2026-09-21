@@ -1,7 +1,7 @@
 const prisma = require("../config/prisma");
 const ApiError = require("../utils/ApiError");
 const { parsePagination, buildPagedResult } = require("../utils/pagination");
-const { formatTicketNumber } = require("../utils/ticketNumber");
+const { formatDepartmentTicketNumber } = require("../utils/ticketNumber");
 const { recordAudit } = require("../utils/audit");
 const notificationService = require("./notification.service");
 const { sanitizeRichText } = require("../utils/sanitize");
@@ -34,39 +34,67 @@ const ticketDetailInclude = {
   },
 };
 
-function teamIdsOf(user) {
-  return (user.teamMemberships || []).map((m) => m.teamId);
-}
-
 // Row-level authorization: what tickets can this user even see/act on.
-// ADMIN -> everything. AGENT -> assigned to them or their team. USER -> only
-// tickets they raised. Used both for list filtering and single-ticket checks.
+// ADMIN -> everything. AGENT (department manager) -> every ticket routed to
+// their department. USER -> tickets they raised, or that they've been
+// assigned to work on. Used both for list filtering and single-ticket checks.
 function scopeWhereForUser(user) {
   if (user.role.name === "ADMIN") return {};
   if (user.role.name === "AGENT") {
-    return { OR: [{ assigneeId: user.id }, { teamId: { in: teamIdsOf(user) } }] };
+    // No department => no tickets, rather than matching everything.
+    return user.departmentId ? { toDepartmentId: user.departmentId } : { id: "" };
   }
-  return { requesterId: user.id };
+  return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
 }
 
 function assertCanView(user, ticket) {
   if (user.role.name === "ADMIN") return;
   if (user.role.name === "AGENT") {
-    if (ticket.assigneeId === user.id || teamIdsOf(user).includes(ticket.teamId)) return;
-    throw new ApiError(403, "This ticket is not assigned to you or your team");
+    if (user.departmentId && ticket.toDepartmentId === user.departmentId) return;
+    throw new ApiError(403, "This ticket does not belong to your department");
   }
-  if (ticket.requesterId !== user.id) {
-    throw new ApiError(403, "You can only view your own tickets");
-  }
+  if (ticket.requesterId === user.id || ticket.assigneeId === user.id) return;
+  throw new ApiError(403, "You can only view tickets you raised or are assigned to");
 }
 
-// Internal (agent-only) notes are stripped out before a response ever
-// reaches an END USER, regardless of what the DB query returned.
+// Internal (staff-only) notes are stripped out before a response reaches
+// the ticket's requester — unless that same person is also the assignee
+// actually working the ticket, they still need to see the manager's notes.
 function scrubInternalComments(ticket, user) {
-  if (user.role.name === "USER") {
+  const isAssignee = ticket.assigneeId === user.id;
+  if (user.role.name === "USER" && !isAssignee) {
     return { ...ticket, comments: ticket.comments.filter((c) => !c.isInternal) };
   }
   return ticket;
+}
+
+// A ticket's assignee must be an active USER employee belonging to the
+// ticket's own (to-)department — never an ADMIN, never an AGENT manager,
+// never someone from an unrelated department.
+async function assertValidAssignee(assigneeId, departmentId) {
+  if (!assigneeId) return;
+  const assignee = await prisma.user.findUnique({ where: { id: assigneeId }, include: { role: true } });
+  if (!assignee || !assignee.isActive || assignee.role.name !== "USER" || assignee.departmentId !== departmentId) {
+    throw new ApiError(400, "Invalid assignee — must be an active employee in this ticket's department");
+  }
+}
+
+// A ticket's manager must be an active AGENT department-manager belonging
+// to the ticket's own destination department — mirrors assertValidAssignee
+// above, just for the manager/AGENT role instead of the assignee/USER role,
+// and mirrors the exact criteria createTicket's own manager lookup already
+// uses (role AGENT, isManager true, isActive true, departmentId match).
+// managerId is normally always server-derived at creation time and is
+// never client-chosen; this is only reached when an ADMIN explicitly
+// overrides it via PATCH (see updateTicket), so a department with no
+// legitimate manager simply has no valid managerId to set — there is no
+// separate fallback to invent here.
+async function assertValidManager(managerId, departmentId) {
+  if (!managerId) return;
+  const manager = await prisma.user.findUnique({ where: { id: managerId }, include: { role: true } });
+  if (!manager || !manager.isActive || manager.role.name !== "AGENT" || !manager.isManager || manager.departmentId !== departmentId) {
+    throw new ApiError(400, "Invalid manager — must be an active department manager (AGENT) for this ticket's department");
+  }
 }
 
 async function recordHistory(tx, { ticketId, userId, action, fieldName, oldValue, newValue }) {
@@ -87,20 +115,50 @@ async function listTickets(user, query) {
   const where = {
     AND: [
       scopeWhereForUser(user),
+      // Dashboard-driven "Raised by Me" / "Assigned to Me" list scope
+      // (mirrors dashboard.service.js's scopeWhereForTab for stats) — ANDed
+      // onto scopeWhereForUser above, never a replacement for it, so
+      // ?scope=assigned can only ever narrow within a caller's own
+      // authorized tickets, never expand it. For a USER this is what makes
+      // "requesterId=me OR assigneeId=me" collapse down to exactly one side
+      // when the dashboard asks for it.
+      query.scope === "created" ? { requesterId: user.id } : query.scope === "assigned" ? { assigneeId: user.id } : {},
       query.status ? { status: query.status } : {},
       query.priorityId ? { priorityId: query.priorityId } : {},
       query.categoryId ? { categoryId: query.categoryId } : {},
       query.assigneeId ? { assigneeId: query.assigneeId } : {},
       query.teamId ? { teamId: query.teamId } : {},
-      query.assigned === "true" ? { assigneeId: { not: null } } : {},
+      // Additive narrowing filters only — every clause here is ANDed onto
+      // scopeWhereForUser(user) above, never OR'd or used in place of it, so
+      // a client passing e.g. ?departmentId=<another department> can only
+      // ever shrink their own authorized result set (to zero, if it doesn't
+      // match), never expand it beyond what scopeWhereForUser already
+      // allows. Same reasoning applies to every filter in this array.
+      query.departmentId ? { toDepartmentId: query.departmentId } : {},
+      query.issueId ? { issueId: query.issueId } : {},
+      query.assigned === "true" ? { assigneeId: { not: null } } : query.assigned === "false" ? { assigneeId: null } : {},
       query.overdue === "true" ? { dueAt: { lt: new Date() }, status: { notIn: ["RESOLVED", "CLOSED"] } } : {},
       query.dateFrom ? { createdAt: { gte: new Date(query.dateFrom) } } : {},
       query.dateTo ? { createdAt: { lte: new Date(query.dateTo) } } : {},
+      // Global search — covers ticket number/title/description plus the
+      // requester/assignee/department/issue it's linked to, per relation,
+      // so "search requester name" etc. means "search among MY authorized
+      // tickets for one whose requester matches" rather than searching the
+      // User table directly. Still ANDed onto scopeWhereForUser above, so
+      // it can never surface a ticket outside the caller's own scope no
+      // matter what free-text is entered.
       query.search
         ? {
             OR: [
               { title: { contains: query.search, mode: "insensitive" } },
               { ticketNumber: { contains: query.search, mode: "insensitive" } },
+              { description: { contains: query.search, mode: "insensitive" } },
+              { requester: { name: { contains: query.search, mode: "insensitive" } } },
+              { requester: { email: { contains: query.search, mode: "insensitive" } } },
+              { assignee: { name: { contains: query.search, mode: "insensitive" } } },
+              { assignee: { email: { contains: query.search, mode: "insensitive" } } },
+              { toDepartment: { name: { contains: query.search, mode: "insensitive" } } },
+              { issue: { name: { contains: query.search, mode: "insensitive" } } },
             ],
           }
         : {},
@@ -127,7 +185,7 @@ async function getTicketById(user, id) {
 }
 
 async function createTicket(user, payload, files = []) {
-  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, managerId, issueId, customIssueText } = payload;
+  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, issueId, customIssueText } = payload;
 
   const fromDepartmentId = user.departmentId;
   if (!fromDepartmentId) {
@@ -138,28 +196,49 @@ async function createTicket(user, payload, files = []) {
     prisma.priority.findUnique({ where: { id: priorityId } }),
     categoryId ? prisma.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
     prisma.department.findUnique({ where: { id: toDepartmentId } }),
-    prisma.user.findUnique({ where: { id: managerId } }),
+    // The manager is never client-chosen — it's whichever AGENT is flagged
+    // as this department's manager (Admin-configured via the Users page).
+    // A department with no manager yet simply routes with managerId=null;
+    // we never fall back to a manager from a different department.
+    prisma.user.findFirst({
+      where: { departmentId: toDepartmentId, isManager: true, isActive: true, role: { name: "AGENT" } },
+      orderBy: { createdAt: "asc" },
+    }),
     prisma.issue.findUnique({ where: { id: issueId } }),
   ]);
   if (!priority) throw new ApiError(400, "Invalid priority");
   if (categoryId && !category) throw new ApiError(400, "Invalid category");
   if (!toDepartment) throw new ApiError(400, "Invalid department");
-  if (!manager || !manager.isManager || manager.departmentId !== toDepartmentId) {
-    throw new ApiError(400, "Invalid manager for this department");
-  }
   if (!issue || !issue.isActive || issue.departmentId !== toDepartmentId) {
     throw new ApiError(400, "Invalid issue for this department");
   }
   if (issue.isOther && !customIssueText?.trim()) {
     throw new ApiError(400, "Please describe the custom issue");
   }
+  await assertValidAssignee(assigneeId, toDepartmentId);
 
   const dueAt = await computeDueAt(priorityId);
 
   const ticket = await prisma.$transaction(async (tx) => {
+    // Department-wise ticket numbering: atomically increment the
+    // destination department's own sequence — a single
+    // UPDATE ... SET "ticketSequence" = "ticketSequence" + 1 is row-locked
+    // by Postgres for the duration of this transaction, so two concurrent
+    // ticket creations for the SAME department can never read/use the same
+    // number (no MAX()+1 race). If anything later in this transaction
+    // fails, the whole transaction — including this increment — rolls
+    // back, so a failed creation never "burns" a number or desyncs the
+    // sequence.
+    const departmentForNumbering = await tx.department.update({
+      where: { id: toDepartmentId },
+      data: { ticketSequence: { increment: 1 } },
+      select: { ticketPrefix: true, ticketSequence: true },
+    });
+    const ticketNumber = formatDepartmentTicketNumber(departmentForNumbering.ticketPrefix, departmentForNumbering.ticketSequence);
+
     const created = await tx.ticket.create({
       data: {
-        ticketNumber: `PENDING-${Date.now()}`, // replaced below once `seq` is known
+        ticketNumber,
         title,
         description: sanitizeRichText(description),
         categoryId: categoryId || null,
@@ -169,7 +248,7 @@ async function createTicket(user, payload, files = []) {
         teamId: teamId || null,
         fromDepartmentId,
         toDepartmentId,
-        managerId,
+        managerId: manager?.id || null,
         issueId,
         customIssueText: issue.isOther ? customIssueText.trim() : null,
         dueAt,
@@ -189,44 +268,40 @@ async function createTicket(user, payload, files = []) {
       });
     }
 
-    const withNumber = await tx.ticket.update({
-      where: { id: created.id },
-      data: { ticketNumber: formatTicketNumber(created.seq) },
-      include: ticketDetailInclude,
-    });
-
     await recordHistory(tx, { ticketId: created.id, userId: user.id, action: "CREATED" });
-    return withNumber;
+
+    // Ticket numbers are stable identifiers set only at creation — never
+    // regenerated by later status/assignee/department/priority changes.
+    return tx.ticket.findUnique({ where: { id: created.id }, include: ticketDetailInclude });
   });
 
   await notificationService.notify({
+    eventKey: "TICKET_CREATED",
     userId: user.id,
     ticketId: ticket.id,
     type: "TICKET_CREATED",
-    title: `Ticket ${ticket.ticketNumber} created`,
-    message: `Your ticket "${ticket.title}" has been received and is now Open.`,
-    email: user.email,
+    ticket,
   });
 
-  await notificationService.notify({
-    userId: manager.id,
-    ticketId: ticket.id,
-    type: "TICKET_CREATED",
-    title: `New ticket ${ticket.ticketNumber} for ${toDepartment.name}`,
-    message: `"${ticket.title}" was raised for ${toDepartment.name} and routed to you.`,
-    email: manager.email,
-  });
+  if (manager) {
+    await notificationService.notify({
+      eventKey: "TICKET_CREATED",
+      userId: manager.id,
+      ticketId: ticket.id,
+      type: "TICKET_CREATED",
+      ticket,
+    });
+  }
 
   if (ticket.assigneeId) {
     const assignee = await prisma.user.findUnique({ where: { id: ticket.assigneeId } });
     if (assignee) {
       await notificationService.notify({
+        eventKey: "TICKET_ASSIGNED",
         userId: assignee.id,
         ticketId: ticket.id,
         type: "TICKET_ASSIGNED",
-        title: `Ticket ${ticket.ticketNumber} assigned to you`,
-        message: `"${ticket.title}" has been assigned to you.`,
-        email: assignee.email,
+        ticket,
       });
     }
   }
@@ -249,15 +324,22 @@ async function updateTicket(user, id, payload) {
   assertCanView(user, ticket);
 
   const isOwner = ticket.requesterId === user.id;
-  const isStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
+  const isAssignee = ticket.assigneeId === user.id;
+  // ADMIN and the department's AGENT manager can fully manage a ticket
+  // (reassign, change priority/department/manager/etc). The USER actually
+  // assigned to work the ticket may drive it through its status workflow
+  // but never reassign or change its routing.
+  const isManagerOrAdmin = user.role.name === "ADMIN" || user.role.name === "AGENT";
+  const canDriveWorkflow = isManagerOrAdmin || isAssignee;
 
   const data = {};
   const historyEntries = [];
 
   if (payload.status !== undefined && payload.status !== ticket.status) {
-    // End users may only reopen a resolved/closed ticket of their own — every
-    // other status transition is staff-only.
-    if (!isStaff) {
+    // The requester may only reopen their own resolved/closed ticket — every
+    // other status transition requires managing the ticket (manager/admin)
+    // or being the employee actually assigned to work it.
+    if (!canDriveWorkflow) {
       if (!(isOwner && payload.status === "REOPENED" && ["RESOLVED", "CLOSED"].includes(ticket.status))) {
         throw new ApiError(403, "You are not allowed to change this ticket's status");
       }
@@ -275,8 +357,10 @@ async function updateTicket(user, id, payload) {
     historyEntries.push({ action: "STATUS_CHANGE", fieldName: "status", oldValue: ticket.status, newValue: payload.status });
   }
 
-  if (isStaff) {
+  if (isManagerOrAdmin) {
     if (payload.assigneeId !== undefined && payload.assigneeId !== ticket.assigneeId) {
+      const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
+      await assertValidAssignee(payload.assigneeId, targetDepartmentId);
       data.assigneeId = payload.assigneeId || null;
       historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assigneeId, newValue: payload.assigneeId });
     }
@@ -298,6 +382,18 @@ async function updateTicket(user, id, payload) {
       historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartmentId, newValue: payload.toDepartmentId });
     }
     if (payload.managerId !== undefined && payload.managerId !== ticket.managerId) {
+      // Only an Administrator may manually override a ticket's manager.
+      // The department's manager is otherwise always server-derived (see
+      // createTicket's manager lookup) — an AGENT sits inside this same
+      // isManagerOrAdmin block for status/priority/assignee/etc, but must
+      // not be able to arbitrarily reassign a ticket's manager (e.g. to
+      // themselves), so that specific field is carved out to ADMIN-only
+      // here rather than being gated by isManagerOrAdmin like the rest.
+      if (user.role.name !== "ADMIN") {
+        throw new ApiError(403, "Only an Administrator can change a ticket's manager");
+      }
+      const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
+      await assertValidManager(payload.managerId, targetDepartmentId);
       data.managerId = payload.managerId || null;
       historyEntries.push({ action: "MANAGER_CHANGE", fieldName: "managerId", oldValue: ticket.managerId, newValue: payload.managerId });
     }
@@ -324,8 +420,22 @@ async function updateTicket(user, id, payload) {
   return scrubInternalComments(updated, user);
 }
 
+// Maps a status transition to its specific event key where one exists
+// (mirrors the RESOLVED/REOPENED special-casing that already existed),
+// falling back to the generic status-changed event for everything else
+// (OPEN/IN_PROGRESS/ON_HOLD).
+function statusEventKey(newValue) {
+  if (newValue === "RESOLVED") return "TICKET_RESOLVED";
+  if (newValue === "REOPENED") return "TICKET_REOPENED";
+  if (newValue === "CLOSED") return "TICKET_CLOSED";
+  return "TICKET_STATUS_CHANGED";
+}
+
 async function notifyOnUpdate(before, after, historyEntries, actor) {
   const recipients = new Set([before.requesterId, before.assigneeId, after.assigneeId].filter((id) => id && id !== actor.id));
+  // Distinguishes a ticket's first-ever assignment from a later reassignment
+  // — purely to pick the right event key; who gets notified is unchanged.
+  const wasAlreadyAssigned = Boolean(before.assigneeId);
 
   for (const entry of historyEntries) {
     for (const userId of recipients) {
@@ -333,36 +443,54 @@ async function notifyOnUpdate(before, after, historyEntries, actor) {
       if (!recipient) continue;
       if (entry.action === "STATUS_CHANGE") {
         await notificationService.notify({
+          eventKey: statusEventKey(entry.newValue),
           userId,
           ticketId: after.id,
           type: "STATUS_CHANGED",
-          title: `Ticket ${after.ticketNumber} status changed`,
-          message: `Status changed from ${entry.oldValue} to ${entry.newValue}.`,
-          email: recipient.email,
+          ticket: after,
+          statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
         });
       }
       if (entry.action === "ASSIGNED" && userId === after.assigneeId) {
         await notificationService.notify({
+          eventKey: wasAlreadyAssigned ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
           userId,
           ticketId: after.id,
           type: "TICKET_ASSIGNED",
-          title: `Ticket ${after.ticketNumber} assigned to you`,
-          message: `"${after.title}" has been assigned to you.`,
-          email: recipient.email,
+          ticket: after,
         });
       }
+    }
+
+    // Reopening specifically needs the department manager back in the loop
+    // even though `recipients` above only ever tracks requester/assignee.
+    if (entry.action === "STATUS_CHANGE" && entry.newValue === "REOPENED" && after.managerId && after.managerId !== actor.id && !recipients.has(after.managerId)) {
+      await notificationService.notify({
+        eventKey: "TICKET_REOPENED",
+        userId: after.managerId,
+        ticketId: after.id,
+        type: "STATUS_CHANGED",
+        ticket: after,
+        statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
+      });
     }
   }
 }
 
 async function addComment(user, ticketId, { body, isInternal }) {
-  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
+  // Includes the same relations as ticketListInclude so the comment-
+  // notification email template has department/priority/issue to show,
+  // not just the bare ticket row.
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: ticketListInclude });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   assertCanView(user, ticket);
 
-  const isStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
-  if (isInternal && !isStaff) {
-    throw new ApiError(403, "Only agents/admins can add internal notes");
+  // Internal notes / "first response" credit go to whoever is actually
+  // handling the ticket: the manager/admin, or the USER assigned to work it
+  // (the assignee is never staff in this model, but plays the same role).
+  const isHandler = user.role.name === "ADMIN" || user.role.name === "AGENT" || ticket.assigneeId === user.id;
+  if (isInternal && !isHandler) {
+    throw new ApiError(403, "Only the manager, admin, or assigned employee can add internal notes");
   }
 
   const cleanBody = sanitizeRichText(body);
@@ -372,7 +500,7 @@ async function addComment(user, ticketId, { body, isInternal }) {
       data: { ticketId, authorId: user.id, body: cleanBody, isInternal: Boolean(isInternal) },
       include: { author: { select: { id: true, name: true, role: { select: { name: true } } } } },
     });
-    if (!ticket.firstResponseAt && isStaff) {
+    if (!ticket.firstResponseAt && isHandler) {
       await tx.ticket.update({ where: { id: ticketId }, data: { firstResponseAt: new Date() } });
     }
     await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENTED" });
@@ -386,12 +514,12 @@ async function addComment(user, ticketId, { body, isInternal }) {
       const recipient = await prisma.user.findUnique({ where: { id: notifyUserId } });
       if (recipient) {
         await notificationService.notify({
+          eventKey: "TICKET_COMMENT_ADDED",
           userId: notifyUserId,
           ticketId,
           type: "NEW_COMMENT",
-          title: `New comment on ${ticket.ticketNumber}`,
-          message: cleanBody.replace(/<[^>]+>/g, " ").trim().slice(0, 200),
-          email: recipient.email,
+          ticket,
+          comment,
         });
       }
     }

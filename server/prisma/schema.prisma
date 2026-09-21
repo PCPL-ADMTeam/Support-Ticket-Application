@@ -41,6 +41,14 @@ model User {
   departmentId String?
   isManager    Boolean   @default(false)
 
+  // Stable link to this user's CloudReady Microsoft Entra ID account (the
+  // Entra object id, a GUID) — set by an Admin via the entra-directory
+  // mapping flow. Preferred over email for identity because email can
+  // change; `email` itself remains the Helpdesk login identity and is
+  // unaffected. Nullable since most users won't be mapped until an Admin
+  // links them.
+  entraObjectId String? @unique
+
   role       Role        @relation(fields: [roleId], references: [id])
   department Department? @relation(fields: [departmentId], references: [id])
 
@@ -114,6 +122,15 @@ model Department {
   name      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // Department-wise ticket numbering (e.g. "HW-0001"). ticketSequence is
+  // only ever advanced via an atomic `{ increment: 1 }` update inside the
+  // ticket-creation transaction (see ticket.service.js#createTicket) —
+  // never read-then-written — so concurrent creations for the same
+  // department can never collide. Not exposed as directly editable in the
+  // Admin UI to prevent an accidental reset/duplicate-ID situation.
+  ticketPrefix   String @unique
+  ticketSequence Int    @default(0)
 
   users   User[]
   issues  Issue[]
@@ -337,6 +354,25 @@ model Notification {
 
   @@index([userId, isRead])
   @@map("notifications")
+}
+
+// Database-driven content for ticket-lifecycle emails/notifications —
+// PostgreSQL decides WHAT an event's email says; ticket.service.js only
+// decides WHEN it fires and WHO receives it (see emailTemplate.service.js
+// for rendering and notification.service.js for the send path). eventKey
+// is one of the fixed TICKET_* constants ticket.service.js emits — never
+// client-supplied or dynamically generated.
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  eventKey  String   @unique
+  name      String
+  subject   String
+  body      String   @db.Text
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("email_templates")
 }
 
 // System-wide log of sensitive/administrative actions (distinct from

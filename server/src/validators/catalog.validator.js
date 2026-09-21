@@ -1,11 +1,5 @@
 const { body } = require("express-validator");
 
-const categoryValidator = [
-  body("name").trim().notEmpty().withMessage("Category name is required"),
-  body("description").optional().trim(),
-  body("parentId").optional({ nullable: true }).isString(),
-];
-
 const priorityValidator = [
   body("name").trim().notEmpty().withMessage("Priority name is required"),
   body("level").isInt({ min: 1 }).withMessage("level must be a positive integer"),
@@ -17,4 +11,4 @@ const slaPolicyValidator = [
   body("resolutionTimeMinutes").isInt({ min: 1 }).withMessage("resolutionTimeMinutes must be a positive integer"),
 ];
 
-module.exports = { categoryValidator, priorityValidator, slaPolicyValidator };
+module.exports = { priorityValidator, slaPolicyValidator };

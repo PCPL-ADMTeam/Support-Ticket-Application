@@ -18,36 +18,39 @@ import {
   TextField,
   MenuItem,
   Stack,
-  Autocomplete,
   FormControlLabel,
   Switch,
+  Tooltip,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import BlockIcon from "@mui/icons-material/Block";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import { useSnackbar } from "notistack";
 import { usersApi } from "../../api/users";
-import { teamsApi } from "../../api/teams";
 import { departmentsApi } from "../../api/departments";
+import { useAuth } from "../../context/AuthContext";
 import LoadingState from "../../components/common/LoadingState";
 import PaginationBar from "../../components/common/PaginationBar";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
 
 const ROLES = ["ADMIN", "AGENT", "USER"];
 
-const emptyForm = { id: null, name: "", email: "", password: "", roleName: "USER", teamIds: [], departmentId: "", isManager: false };
+const emptyForm = { id: null, name: "", email: "", password: "", roleName: "USER", departmentId: "", isManager: false };
 
 export default function UsersPage() {
   const { enqueueSnackbar } = useSnackbar();
+  const { user: currentUser } = useAuth();
   const [filters, setFilters] = useState({ page: 1, limit: 20, search: "", role: "" });
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [teams, setTeams] = useState([]);
   const [departments, setDepartments] = useState([]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [deactivateTarget, setDeactivateTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,7 +61,6 @@ export default function UsersPage() {
   }, [filters]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { teamsApi.list().then(({ data }) => setTeams(data.data)); }, []);
   useEffect(() => { departmentsApi.list().then(({ data }) => setDepartments(data.data)); }, []);
 
   const openCreate = () => { setForm(emptyForm); setDialogOpen(true); };
@@ -69,7 +71,6 @@ export default function UsersPage() {
       email: u.email,
       password: "",
       roleName: u.role.name,
-      teamIds: u.teamMemberships.map((m) => m.team.id),
       departmentId: u.departmentId || "",
       isManager: u.isManager,
     });
@@ -80,9 +81,9 @@ export default function UsersPage() {
     try {
       const shared = { departmentId: form.departmentId || null, isManager: form.isManager };
       if (form.id) {
-        await usersApi.update(form.id, { name: form.name, roleName: form.roleName, teamIds: form.teamIds, ...shared });
+        await usersApi.update(form.id, { name: form.name, roleName: form.roleName, ...shared });
       } else {
-        await usersApi.create({ name: form.name, email: form.email, password: form.password, roleName: form.roleName, teamIds: form.teamIds, ...shared });
+        await usersApi.create({ name: form.name, email: form.email, password: form.password, roleName: form.roleName, ...shared });
       }
       setDialogOpen(false);
       load();
@@ -100,6 +101,30 @@ export default function UsersPage() {
       enqueueSnackbar("User deactivated", { variant: "success" });
     } catch (err) {
       enqueueSnackbar(err.response?.data?.message || "Failed to deactivate", { variant: "error" });
+    }
+  };
+
+  // Activating is immediate (no confirmation) — same convention as
+  // EmailTemplatesPage's isActive toggle, where only turning something OFF
+  // asks for confirmation.
+  const handleActivate = async (u) => {
+    try {
+      await usersApi.activate(u.id);
+      load();
+      enqueueSnackbar("User activated", { variant: "success" });
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to activate", { variant: "error" });
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      await usersApi.remove(deleteTarget.id);
+      setDeleteTarget(null);
+      load();
+      enqueueSnackbar("User deleted", { variant: "success" });
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to delete", { variant: "error" });
     }
   };
 
@@ -126,7 +151,6 @@ export default function UsersPage() {
                 <TableCell>Name</TableCell>
                 <TableCell>Email</TableCell>
                 <TableCell>Role</TableCell>
-                <TableCell>Teams</TableCell>
                 <TableCell>Department</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell align="right">Actions</TableCell>
@@ -138,7 +162,6 @@ export default function UsersPage() {
                   <TableCell>{u.name}</TableCell>
                   <TableCell>{u.email}</TableCell>
                   <TableCell><Chip size="small" label={u.role.name} /></TableCell>
-                  <TableCell>{u.teamMemberships.map((m) => m.team.name).join(", ") || "—"}</TableCell>
                   <TableCell>
                     {u.department?.name || "—"}
                     {u.isManager && <Chip size="small" label="Manager" sx={{ ml: 0.5 }} />}
@@ -147,10 +170,24 @@ export default function UsersPage() {
                     <Chip size="small" label={u.isActive ? "Active" : "Inactive"} color={u.isActive ? "success" : "default"} />
                   </TableCell>
                   <TableCell align="right">
-                    <IconButton size="small" onClick={() => openEdit(u)}><EditIcon fontSize="small" /></IconButton>
-                    {u.isActive && (
-                      <IconButton size="small" onClick={() => setDeactivateTarget(u)}><BlockIcon fontSize="small" /></IconButton>
+                    <IconButton size="small" onClick={() => openEdit(u)} title="Edit"><EditIcon fontSize="small" /></IconButton>
+                    {u.isActive ? (
+                      <IconButton size="small" onClick={() => setDeactivateTarget(u)} title="Deactivate"><BlockIcon fontSize="small" /></IconButton>
+                    ) : (
+                      <IconButton size="small" onClick={() => handleActivate(u)} title="Activate"><CheckCircleOutlineIcon fontSize="small" /></IconButton>
                     )}
+                    <Tooltip title={u.id === currentUser.id ? "You cannot delete your own account" : "Delete"}>
+                      <span>
+                        <IconButton
+                          size="small"
+                          color="error"
+                          disabled={u.id === currentUser.id}
+                          onClick={() => setDeleteTarget(u)}
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
                   </TableCell>
                 </TableRow>
               ))}
@@ -176,14 +213,6 @@ export default function UsersPage() {
             <TextField select label="Role" value={form.roleName} onChange={(e) => setForm((f) => ({ ...f, roleName: e.target.value }))} fullWidth>
               {ROLES.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}
             </TextField>
-            <Autocomplete
-              multiple
-              options={teams}
-              getOptionLabel={(t) => t.name}
-              value={teams.filter((t) => form.teamIds.includes(t.id))}
-              onChange={(_e, value) => setForm((f) => ({ ...f, teamIds: value.map((v) => v.id) }))}
-              renderInput={(params) => <TextField {...params} label="Teams" />}
-            />
             <TextField
               select
               label="Department"
@@ -215,6 +244,16 @@ export default function UsersPage() {
         danger
         onClose={() => setDeactivateTarget(null)}
         onConfirm={handleDeactivate}
+      />
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Delete user?"
+        message={`Are you sure you want to permanently delete this user? "${deleteTarget?.name}" (${deleteTarget?.email}) will be permanently removed from the database. This cannot be undone.`}
+        confirmLabel="Delete Permanently"
+        danger
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
       />
     </Box>
   );

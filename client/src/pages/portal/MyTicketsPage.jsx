@@ -1,30 +1,33 @@
-import { useState } from "react";
-import { Box, Tab, Tabs, Typography } from "@mui/material";
+import { useSearchParams } from "react-router-dom";
+import { Box, Typography } from "@mui/material";
 import TicketsListPage from "../TicketsListPage";
 
-const ASSIGNED_FILTERS = { assigned: "true" };
+const SCOPE_LABELS = {
+  created: "Raised by Me",
+  assigned: "Assigned to Me",
+};
 
+// A single unified list by default — not "Created"/"Assigned" tabs. USER's
+// backend scope (ticket.service.js#scopeWhereForUser) already means
+// "requesterId = me OR assigneeId = me" as ONE query, so a ticket the user
+// both raised and is assigned to is never duplicated. When arriving from a
+// dashboard KPI/card (DashboardPage.jsx's goToTickets), the URL carries
+// ?scope=created|assigned, which TicketsListPage forwards straight through
+// to GET /tickets — this page just reflects that back in the heading so
+// the active scope is obvious, per the dashboard-navigation fix.
 export default function MyTicketsPage() {
-  const [tab, setTab] = useState(0);
+  const [searchParams] = useSearchParams();
+  const scopeLabel = SCOPE_LABELS[searchParams.get("scope")];
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 2 }}>Tickets</Typography>
-      <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ borderBottom: 1, borderColor: "divider", mb: 2 }}>
-        <Tab label="Created Tickets" id="raised-tickets-tab" aria-controls="raised-tickets-panel" />
-        <Tab label="Assigned Ticket" id="assigned-tickets-tab" aria-controls="assigned-tickets-panel" />
-      </Tabs>
-
-      {tab === 0 && (
-        <Box role="tabpanel" id="raised-tickets-panel" aria-labelledby="raised-tickets-tab">
-          <TicketsListPage title="Created Tickets" hideHeading />
-        </Box>
-      )}
-      {tab === 1 && (
-        <Box role="tabpanel" id="assigned-tickets-panel" aria-labelledby="assigned-tickets-tab">
-          <TicketsListPage title="Assigned Ticket" hideHeading additionalFilters={ASSIGNED_FILTERS} />
-        </Box>
-      )}
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="h4">My Tickets</Typography>
+        {scopeLabel && (
+          <Typography variant="body2" color="text.secondary">{scopeLabel}</Typography>
+        )}
+      </Box>
+      <TicketsListPage hideHeading showAssignee />
     </Box>
   );
 }

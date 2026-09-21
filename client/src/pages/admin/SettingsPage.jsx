@@ -1,8 +1,8 @@
 import { Box, Typography, Paper, Stack, List, ListItemButton, ListItemText, Divider, Alert } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
 
-// Lightweight settings hub — the actual configurable resources (categories,
-// priorities/SLA, teams, users) each have their own dedicated admin page;
+// Lightweight settings hub — the actual configurable resources
+// (priorities/SLA, teams, users) each have their own dedicated admin page;
 // this page is the index plus system-level info that isn't editable from
 // the UI (mail/JWT config lives in server/.env by design).
 export default function SettingsPage() {
@@ -13,10 +13,6 @@ export default function SettingsPage() {
       <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
         <Typography variant="subtitle1" fontWeight={700} gutterBottom>Configuration</Typography>
         <List disablePadding>
-          <ListItemButton component={RouterLink} to="/admin/categories">
-            <ListItemText primary="Categories & Sub-categories" secondary="Ticket classification taxonomy" />
-          </ListItemButton>
-          <Divider component="li" />
           <ListItemButton component={RouterLink} to="/admin/sla">
             <ListItemText primary="Priorities & SLA Policies" secondary="Response/resolution time targets per priority" />
           </ListItemButton>

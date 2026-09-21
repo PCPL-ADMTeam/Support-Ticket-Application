@@ -4,22 +4,16 @@ const { scopeWhereForUser } = require("./ticket.service");
 
 const STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"];
 
-function teamIdsOf(user) {
-  return (user.teamMemberships || []).map((m) => m.teamId);
-}
-
 // Builds a raw-SQL WHERE fragment mirroring scopeWhereForUser()'s Prisma
 // `where`, for the queries below that need raw SQL (date bucketing, AVG()).
 // Values are bound via Prisma.sql template params, never string-concatenated.
 function scopeSqlForUser(user) {
   if (user.role.name === "ADMIN") return Prisma.sql`TRUE`;
   if (user.role.name === "AGENT") {
-    const teamIds = teamIdsOf(user);
-    return teamIds.length
-      ? Prisma.sql`("assigneeId" = ${user.id} OR "teamId" IN (${Prisma.join(teamIds)}))`
-      : Prisma.sql`"assigneeId" = ${user.id}`;
+    // AGENT = department manager: scoped to tickets routed to their department.
+    return user.departmentId ? Prisma.sql`"toDepartmentId" = ${user.departmentId}` : Prisma.sql`FALSE`;
   }
-  return Prisma.sql`"requesterId" = ${user.id}`;
+  return Prisma.sql`("requesterId" = ${user.id} OR "assigneeId" = ${user.id})`;
 }
 
 // "My Tickets" (assigned to me) vs "My Requests" (raised by me) dashboard
@@ -50,22 +44,23 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
   const [
     statusGroups,
     priorityGroups,
-    categoryGroups,
     totalCount,
+    unassignedCount,
   ] = await Promise.all([
     prisma.ticket.groupBy({ by: ["status"], where, _count: { _all: true } }),
     prisma.ticket.groupBy({ by: ["priorityId"], where, _count: { _all: true } }),
-    prisma.ticket.groupBy({ by: ["categoryId"], where, _count: { _all: true } }),
     prisma.ticket.count({ where }),
+    // Used by the Agent (department manager) dashboard to surface tickets
+    // nobody is working yet; harmless extra field for Admin/User, who don't
+    // display it.
+    prisma.ticket.count({ where: { AND: [...where.AND, { assigneeId: null }] } }),
   ]);
 
-  const [priorities, categories] = await Promise.all([
-    prisma.priority.findMany({ select: { id: true, name: true, color: true } }),
-    prisma.category.findMany({ select: { id: true, name: true } }),
-  ]);
+  const priorities = await prisma.priority.findMany({ select: { id: true, name: true, color: true } });
 
   const kpis = {
     total: totalCount,
+    unassigned: unassignedCount,
     ...Object.fromEntries(STATUSES.map((s) => [s.toLowerCase(), 0])),
   };
   for (const g of statusGroups) kpis[g.status.toLowerCase()] = g._count._all;
@@ -80,11 +75,6 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     color: p.color,
     count: priorityGroups.find((g) => g.priorityId === p.id)?._count._all || 0,
   }));
-
-  const byCategory = categories
-    .map((c) => ({ category: c.name, count: categoryGroups.find((g) => g.categoryId === c.id)?._count._all || 0 }))
-    .filter((c) => c.count > 0)
-    .sort((a, b) => b.count - a.count);
 
   // Created-vs-resolved trend, bucketed by day via SQL date_trunc — a single
   // aggregate query rather than pulling every row into Node.
@@ -102,14 +92,31 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
 
   const trend = mergeSeries(createdSeries, resolvedSeries, days);
 
-  // Agent workload: open tickets per agent (Admin sees everyone; an Agent's
-  // own dashboard only shows their team via the same scope filter).
+  // Employee workload: tickets per USER employee (the people tickets are
+  // actually assigned to), broken down by status. Admin sees every
+  // department; a manager's own dashboard is scoped to their department via
+  // the same ${scopeSql} filter plus an explicit departmentId match on the
+  // employee row itself. `openTickets` keeps its original definition/name
+  // (any status still not RESOLVED/CLOSED) for backward compatibility with
+  // the existing Admin dashboard's AgentWorkloadTable; inProgressTickets and
+  // resolvedTickets are additive fields for the Agent dashboard's richer
+  // Employee Workload table.
+  const departmentFilter =
+    user.role.name === "AGENT" && user.departmentId
+      ? Prisma.sql`AND u."departmentId" = ${user.departmentId}`
+      : Prisma.empty;
+
   const workload = await prisma.$queryRaw`
-    SELECT u.id AS "agentId", u.name AS "agentName", COUNT(t.id)::int AS "openTickets"
+    SELECT
+      u.id AS "agentId",
+      u.name AS "agentName",
+      COUNT(t.id) FILTER (WHERE t.status NOT IN ('RESOLVED', 'CLOSED'))::int AS "openTickets",
+      COUNT(t.id) FILTER (WHERE t.status = 'IN_PROGRESS')::int AS "inProgressTickets",
+      COUNT(t.id) FILTER (WHERE t.status IN ('RESOLVED', 'CLOSED'))::int AS "resolvedTickets"
     FROM users u
-    JOIN roles r ON r.id = u."roleId" AND r.name IN ('AGENT', 'ADMIN')
-    LEFT JOIN tickets t ON t."assigneeId" = u.id AND t.status NOT IN ('RESOLVED', 'CLOSED') AND ${scopeSql}
-    WHERE u."isActive" = TRUE
+    JOIN roles r ON r.id = u."roleId" AND r.name = 'USER'
+    LEFT JOIN tickets t ON t."assigneeId" = u.id AND ${scopeSql}
+    WHERE u."isActive" = TRUE ${departmentFilter}
     GROUP BY u.id, u.name
     ORDER BY "openTickets" DESC`;
 
@@ -117,9 +124,14 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     kpis,
     byStatus,
     byPriority,
-    byCategory,
     trend,
-    workload: workload.map((w) => ({ ...w, agentId: String(w.agentId), openTickets: Number(w.openTickets) })),
+    workload: workload.map((w) => ({
+      ...w,
+      agentId: String(w.agentId),
+      openTickets: Number(w.openTickets),
+      inProgressTickets: Number(w.inProgressTickets),
+      resolvedTickets: Number(w.resolvedTickets),
+    })),
   };
 }
 

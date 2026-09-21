@@ -8,6 +8,7 @@ const createUserValidator = [
   body("teamIds").optional().isArray().withMessage("teamIds must be an array"),
   body("departmentId").optional({ nullable: true }).isString(),
   body("isManager").optional().isBoolean(),
+  body("entraObjectId").optional({ nullable: true }).isString(),
 ];
 
 const updateUserValidator = [
@@ -18,6 +19,7 @@ const updateUserValidator = [
   body("teamIds").optional().isArray(),
   body("departmentId").optional({ nullable: true }).isString(),
   body("isManager").optional().isBoolean(),
+  body("entraObjectId").optional({ nullable: true }).isString(),
 ];
 
 const updateProfileValidator = [

@@ -251,49 +251,55 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
             </Box>
           )}
 
-          {raiseTicketPath && (
-            <Button
-              component={NavLink}
-              to={raiseTicketPath}
-              variant="contained"
-              startIcon={<AddIcon />}
-              sx={{ whiteSpace: "nowrap" }}
-            >
-              Create Ticket
-            </Button>
-          )}
-
-          {/* Theme */}
-          <IconButton
-            onClick={toggleMode}
-            color="inherit"
-          >
-            {mode === "dark" ? (
-              <Brightness7Icon />
-            ) : (
-              <Brightness4Icon />
+          {/* Right-side actions — always pushed to the far right via ml:
+              "auto" on this wrapper, independent of whether the center
+              search box above is rendered (it's conditional on
+              ticketSearchPath; this group must not depend on that). */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
+            {raiseTicketPath && (
+              <Button
+                component={NavLink}
+                to={raiseTicketPath}
+                variant="contained"
+                startIcon={<AddIcon />}
+                sx={{ whiteSpace: "nowrap" }}
+              >
+                Create Ticket
+              </Button>
             )}
-          </IconButton>
 
-          {/* Notifications */}
-          <NotificationBell />
-
-          {/* User */}
-          <IconButton
-            onClick={(e) =>
-              setUserMenuAnchor(e.currentTarget)
-            }
-          >
-            <Avatar
-              sx={{
-                width: 32,
-                height: 32,
-                bgcolor: "primary.main",
-              }}
+            {/* Theme */}
+            <IconButton
+              onClick={toggleMode}
+              color="inherit"
             >
-              {user?.name?.[0]?.toUpperCase() || "U"}
-            </Avatar>
-          </IconButton>
+              {mode === "dark" ? (
+                <Brightness7Icon />
+              ) : (
+                <Brightness4Icon />
+              )}
+            </IconButton>
+
+            {/* Notifications */}
+            <NotificationBell />
+
+            {/* User */}
+            <IconButton
+              onClick={(e) =>
+                setUserMenuAnchor(e.currentTarget)
+              }
+            >
+              <Avatar
+                sx={{
+                  width: 32,
+                  height: 32,
+                  bgcolor: "primary.main",
+                }}
+              >
+                {user?.name?.[0]?.toUpperCase() || "U"}
+              </Avatar>
+            </IconButton>
+          </Box>
 
           {/* User Menu */}
           <Menu
