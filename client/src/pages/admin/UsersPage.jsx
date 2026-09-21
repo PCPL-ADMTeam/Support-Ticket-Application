@@ -19,8 +19,6 @@ import {
   MenuItem,
   Stack,
   Autocomplete,
-  FormControlLabel,
-  Switch,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import BlockIcon from "@mui/icons-material/Block";
@@ -33,9 +31,9 @@ import LoadingState from "../../components/common/LoadingState";
 import PaginationBar from "../../components/common/PaginationBar";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
 
-const ROLES = ["ADMIN", "AGENT", "USER"];
+const ROLES = ["ADMIN", "MANAGER", "USER"];
 
-const emptyForm = { id: null, name: "", email: "", password: "", roleName: "USER", teamIds: [], departmentId: "", isManager: false };
+const emptyForm = { id: null, name: "", email: "", password: "", roleName: "USER", teamIds: [], departmentId: "" };
 
 export default function UsersPage() {
   const { enqueueSnackbar } = useSnackbar();
@@ -71,14 +69,13 @@ export default function UsersPage() {
       roleName: u.role.name,
       teamIds: u.teamMemberships.map((m) => m.team.id),
       departmentId: u.departmentId || "",
-      isManager: u.isManager,
     });
     setDialogOpen(true);
   };
 
   const handleSave = async () => {
     try {
-      const shared = { departmentId: form.departmentId || null, isManager: form.isManager };
+      const shared = { departmentId: form.departmentId || null };
       if (form.id) {
         await usersApi.update(form.id, { name: form.name, roleName: form.roleName, teamIds: form.teamIds, ...shared });
       } else {
@@ -139,10 +136,7 @@ export default function UsersPage() {
                   <TableCell>{u.email}</TableCell>
                   <TableCell><Chip size="small" label={u.role.name} /></TableCell>
                   <TableCell>{u.teamMemberships.map((m) => m.team.name).join(", ") || "—"}</TableCell>
-                  <TableCell>
-                    {u.department?.name || "—"}
-                    {u.isManager && <Chip size="small" label="Manager" sx={{ ml: 0.5 }} />}
-                  </TableCell>
+                  <TableCell>{u.department?.name || "—"}</TableCell>
                   <TableCell>
                     <Chip size="small" label={u.isActive ? "Active" : "Inactive"} color={u.isActive ? "success" : "default"} />
                   </TableCell>
@@ -195,10 +189,6 @@ export default function UsersPage() {
               <MenuItem value="">None</MenuItem>
               {departments.map((d) => <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>)}
             </TextField>
-            <FormControlLabel
-              control={<Switch checked={form.isManager} onChange={(e) => setForm((f) => ({ ...f, isManager: e.target.checked }))} />}
-              label="Is a department manager (selectable as a ticket's Manager)"
-            />
           </Stack>
         </DialogContent>
         <DialogActions>

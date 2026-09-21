@@ -34,36 +34,49 @@ const ticketDetailInclude = {
   },
 };
 
-function teamIdsOf(user) {
-  return (user.teamMemberships || []).map((m) => m.teamId);
+// A Manager only ever oversees the one department they were assigned to
+// (Department.managerId) — mirrored on their own User.departmentId.
+function isDeptManager(user, ticket) {
+  return user.role.name === "MANAGER" && Boolean(user.departmentId) && ticket.toDepartmentId === user.departmentId;
+}
+
+function isAssignedUser(user, ticket) {
+  return Boolean(ticket.assigneeId) && ticket.assigneeId === user.id;
+}
+
+// "Not just the plain requester" — Admins, the department Manager, and
+// whoever the ticket is assigned to. Used to gate internal notes and their
+// visibility, mirroring the old ADMIN/AGENT "isStaff" split.
+function isPrivileged(user, ticket) {
+  return user.role.name === "ADMIN" || isDeptManager(user, ticket) || isAssignedUser(user, ticket);
 }
 
 // Row-level authorization: what tickets can this user even see/act on.
-// ADMIN -> everything. AGENT -> assigned to them or their team. USER -> only
-// tickets they raised. Used both for list filtering and single-ticket checks.
+// ADMIN -> everything. MANAGER -> every ticket routed to their department.
+// USER -> tickets they raised OR were assigned. Used both for list
+// filtering and single-ticket checks.
 function scopeWhereForUser(user) {
   if (user.role.name === "ADMIN") return {};
-  if (user.role.name === "AGENT") {
-    return { OR: [{ assigneeId: user.id }, { teamId: { in: teamIdsOf(user) } }] };
+  if (user.role.name === "MANAGER") {
+    return { toDepartmentId: user.departmentId || "__none__" };
   }
-  return { requesterId: user.id };
+  return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
 }
 
 function assertCanView(user, ticket) {
   if (user.role.name === "ADMIN") return;
-  if (user.role.name === "AGENT") {
-    if (ticket.assigneeId === user.id || teamIdsOf(user).includes(ticket.teamId)) return;
-    throw new ApiError(403, "This ticket is not assigned to you or your team");
+  if (user.role.name === "MANAGER") {
+    if (ticket.toDepartmentId && ticket.toDepartmentId === user.departmentId) return;
+    throw new ApiError(403, "This ticket is not in your department");
   }
-  if (ticket.requesterId !== user.id) {
-    throw new ApiError(403, "You can only view your own tickets");
-  }
+  if (ticket.requesterId === user.id || ticket.assigneeId === user.id) return;
+  throw new ApiError(403, "You can only view tickets you raised or are assigned to");
 }
 
-// Internal (agent-only) notes are stripped out before a response ever
-// reaches an END USER, regardless of what the DB query returned.
+// Internal notes are stripped out before a response ever reaches a plain
+// requester who isn't also the department Manager or the assignee.
 function scrubInternalComments(ticket, user) {
-  if (user.role.name === "USER") {
+  if (!isPrivileged(user, ticket)) {
     return { ...ticket, comments: ticket.comments.filter((c) => !c.isInternal) };
   }
   return ticket;
@@ -81,19 +94,30 @@ async function computeDueAt(priorityId, from = new Date()) {
   return new Date(from.getTime() + policy.resolutionTimeMinutes * 60000);
 }
 
+// Narrows the default row-level scope to just "created by me" or "assigned
+// to me" for the My Tickets / Assigned Tickets tabs — used by the ticket
+// list endpoint the same way dashboard.service.js scopes its stats tabs.
+function scopeWhereForTab(user, scope) {
+  if (scope === "created") return { requesterId: user.id };
+  if (scope === "assigned") return { assigneeId: user.id };
+  return scopeWhereForUser(user);
+}
+
 async function listTickets(user, query) {
   const { page, limit, skip, take } = parsePagination(query);
 
   const where = {
     AND: [
-      scopeWhereForUser(user),
+      scopeWhereForTab(user, query.scope),
       query.status ? { status: query.status } : {},
       query.priorityId ? { priorityId: query.priorityId } : {},
       query.categoryId ? { categoryId: query.categoryId } : {},
       query.assigneeId ? { assigneeId: query.assigneeId } : {},
-      query.teamId ? { teamId: query.teamId } : {},
       query.assigned === "true" ? { assigneeId: { not: null } } : {},
+      query.unassigned === "true" ? { assigneeId: null } : {},
       query.overdue === "true" ? { dueAt: { lt: new Date() }, status: { notIn: ["RESOLVED", "CLOSED"] } } : {},
+      // High/Critical = priority level 3+ (see seed.js priorityDefs) regardless of status.
+      query.highCritical === "true" ? { priority: { level: { gte: 3 } } } : {},
       query.dateFrom ? { createdAt: { gte: new Date(query.dateFrom) } } : {},
       query.dateTo ? { createdAt: { lte: new Date(query.dateTo) } } : {},
       query.search
@@ -127,26 +151,28 @@ async function getTicketById(user, id) {
 }
 
 async function createTicket(user, payload, files = []) {
-  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, managerId, issueId, customIssueText } = payload;
+  const { title, description, categoryId, priorityId, toDepartmentId, issueId, customIssueText } = payload;
 
   const fromDepartmentId = user.departmentId;
   if (!fromDepartmentId) {
     throw new ApiError(400, "Your account has no department assigned. Contact an administrator.");
   }
 
-  const [priority, category, toDepartment, manager, issue] = await Promise.all([
+  const [priority, category, toDepartment, issue] = await Promise.all([
     prisma.priority.findUnique({ where: { id: priorityId } }),
     categoryId ? prisma.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
-    prisma.department.findUnique({ where: { id: toDepartmentId } }),
-    prisma.user.findUnique({ where: { id: managerId } }),
+    prisma.department.findUnique({ where: { id: toDepartmentId }, include: { manager: true } }),
     prisma.issue.findUnique({ where: { id: issueId } }),
   ]);
   if (!priority) throw new ApiError(400, "Invalid priority");
   if (categoryId && !category) throw new ApiError(400, "Invalid category");
   if (!toDepartment) throw new ApiError(400, "Invalid department");
-  if (!manager || !manager.isManager || manager.departmentId !== toDepartmentId) {
-    throw new ApiError(400, "Invalid manager for this department");
+  // Every ticket routes to its department's single Manager, resolved here —
+  // there is no manual manager picker anymore (see TicketForm.jsx).
+  if (!toDepartment.manager) {
+    throw new ApiError(400, "This department has no manager assigned yet. Contact an administrator.");
   }
+  const manager = toDepartment.manager;
   if (!issue || !issue.isActive || issue.departmentId !== toDepartmentId) {
     throw new ApiError(400, "Invalid issue for this department");
   }
@@ -165,11 +191,9 @@ async function createTicket(user, payload, files = []) {
         categoryId: categoryId || null,
         priorityId,
         requesterId: user.id,
-        assigneeId: assigneeId || null,
-        teamId: teamId || null,
         fromDepartmentId,
         toDepartmentId,
-        managerId,
+        managerId: manager.id,
         issueId,
         customIssueText: issue.isOther ? customIssueText.trim() : null,
         dueAt,
@@ -217,20 +241,6 @@ async function createTicket(user, payload, files = []) {
     email: manager.email,
   });
 
-  if (ticket.assigneeId) {
-    const assignee = await prisma.user.findUnique({ where: { id: ticket.assigneeId } });
-    if (assignee) {
-      await notificationService.notify({
-        userId: assignee.id,
-        ticketId: ticket.id,
-        type: "TICKET_ASSIGNED",
-        title: `Ticket ${ticket.ticketNumber} assigned to you`,
-        message: `"${ticket.title}" has been assigned to you.`,
-        email: assignee.email,
-      });
-    }
-  }
-
   return ticket;
 }
 
@@ -249,20 +259,23 @@ async function updateTicket(user, id, payload) {
   assertCanView(user, ticket);
 
   const isOwner = ticket.requesterId === user.id;
-  const isStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
+  const isAdmin = user.role.name === "ADMIN";
+  const deptManager = isDeptManager(user, ticket);
+  const assignedUser = isAssignedUser(user, ticket);
 
   const data = {};
   const historyEntries = [];
 
   if (payload.status !== undefined && payload.status !== ticket.status) {
-    // End users may only reopen a resolved/closed ticket of their own — every
-    // other status transition is staff-only.
-    if (!isStaff) {
-      if (!(isOwner && payload.status === "REOPENED" && ["RESOLVED", "CLOSED"].includes(ticket.status))) {
-        throw new ApiError(403, "You are not allowed to change this ticket's status");
+    // The department Manager and Admin can drive any valid transition; the
+    // assigned User progresses/resolves their own work the same way. A plain
+    // requester may only reopen a resolved/closed ticket of their own.
+    if (isAdmin || deptManager || assignedUser) {
+      if (!VALID_TRANSITIONS[ticket.status]?.includes(payload.status)) {
+        throw new ApiError(400, `Cannot transition from ${ticket.status} to ${payload.status}`);
       }
-    } else if (!VALID_TRANSITIONS[ticket.status]?.includes(payload.status)) {
-      throw new ApiError(400, `Cannot transition from ${ticket.status} to ${payload.status}`);
+    } else if (!(isOwner && payload.status === "REOPENED" && ["RESOLVED", "CLOSED"].includes(ticket.status))) {
+      throw new ApiError(403, "You are not allowed to change this ticket's status");
     }
 
     data.status = payload.status;
@@ -275,15 +288,29 @@ async function updateTicket(user, id, payload) {
     historyEntries.push({ action: "STATUS_CHANGE", fieldName: "status", oldValue: ticket.status, newValue: payload.status });
   }
 
-  if (isStaff) {
-    if (payload.assigneeId !== undefined && payload.assigneeId !== ticket.assigneeId) {
-      data.assigneeId = payload.assigneeId || null;
-      historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assigneeId, newValue: payload.assigneeId });
+  // Assigning/reassigning is the department Manager's core power (or
+  // Admin's, unrestricted). The new assignee must be a User belonging to
+  // the ticket's department — Admin may pick from anywhere.
+  if (payload.assigneeId !== undefined && payload.assigneeId !== ticket.assigneeId) {
+    if (!isAdmin && !deptManager) {
+      throw new ApiError(403, "Only the department Manager or an Admin can assign this ticket");
     }
-    if (payload.teamId !== undefined && payload.teamId !== ticket.teamId) {
-      data.teamId = payload.teamId || null;
-      historyEntries.push({ action: "TEAM_CHANGE", fieldName: "teamId", oldValue: ticket.teamId, newValue: payload.teamId });
+    if (payload.assigneeId) {
+      const assignee = await prisma.user.findUnique({ where: { id: payload.assigneeId }, include: { role: true } });
+      if (!assignee || assignee.role.name !== "USER") {
+        throw new ApiError(400, "Tickets can only be assigned to a User");
+      }
+      if (!isAdmin && assignee.departmentId !== ticket.toDepartmentId) {
+        throw new ApiError(400, "The assignee must belong to this ticket's department");
+      }
     }
+    data.assigneeId = payload.assigneeId || null;
+    historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assigneeId, newValue: payload.assigneeId });
+  }
+
+  // Priority, category and department/issue re-routing stay Admin-only —
+  // "overall control" per the workflow spec.
+  if (isAdmin) {
     if (payload.priorityId !== undefined && payload.priorityId !== ticket.priorityId) {
       data.priorityId = payload.priorityId;
       data.dueAt = await computeDueAt(payload.priorityId, ticket.createdAt);
@@ -294,12 +321,15 @@ async function updateTicket(user, id, payload) {
       historyEntries.push({ action: "CATEGORY_CHANGE", fieldName: "categoryId", oldValue: ticket.categoryId, newValue: payload.categoryId });
     }
     if (payload.toDepartmentId !== undefined && payload.toDepartmentId !== ticket.toDepartmentId) {
+      const newDept = payload.toDepartmentId
+        ? await prisma.department.findUnique({ where: { id: payload.toDepartmentId }, include: { manager: true } })
+        : null;
+      if (payload.toDepartmentId && !newDept) throw new ApiError(400, "Invalid department");
       data.toDepartmentId = payload.toDepartmentId || null;
+      // Re-routing to a new department re-resolves its manager too — there's
+      // no manual manager picker (see TicketForm.jsx).
+      data.managerId = newDept?.manager?.id || null;
       historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartmentId, newValue: payload.toDepartmentId });
-    }
-    if (payload.managerId !== undefined && payload.managerId !== ticket.managerId) {
-      data.managerId = payload.managerId || null;
-      historyEntries.push({ action: "MANAGER_CHANGE", fieldName: "managerId", oldValue: ticket.managerId, newValue: payload.managerId });
     }
     if (payload.issueId !== undefined && payload.issueId !== ticket.issueId) {
       data.issueId = payload.issueId || null;
@@ -360,9 +390,9 @@ async function addComment(user, ticketId, { body, isInternal }) {
   if (!ticket) throw new ApiError(404, "Ticket not found");
   assertCanView(user, ticket);
 
-  const isStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
-  if (isInternal && !isStaff) {
-    throw new ApiError(403, "Only agents/admins can add internal notes");
+  const privileged = isPrivileged(user, ticket);
+  if (isInternal && !privileged) {
+    throw new ApiError(403, "Only the department Manager, an Admin, or the assignee can add internal notes");
   }
 
   const cleanBody = sanitizeRichText(body);
@@ -372,7 +402,7 @@ async function addComment(user, ticketId, { body, isInternal }) {
       data: { ticketId, authorId: user.id, body: cleanBody, isInternal: Boolean(isInternal) },
       include: { author: { select: { id: true, name: true, role: { select: { name: true } } } } },
     });
-    if (!ticket.firstResponseAt && isStaff) {
+    if (!ticket.firstResponseAt && privileged) {
       await tx.ticket.update({ where: { id: ticketId }, data: { firstResponseAt: new Date() } });
     }
     await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENTED" });
@@ -400,7 +430,7 @@ async function addComment(user, ticketId, { body, isInternal }) {
   return comment;
 }
 
-async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, teamId }) {
+async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId }) {
   if (user.role.name !== "ADMIN") throw new ApiError(403, "Only Admins can perform bulk actions");
   if (!ticketIds?.length) throw new ApiError(400, "ticketIds is required");
 
@@ -408,7 +438,6 @@ async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, tea
   if (status) data.status = status;
   if (priorityId) data.priorityId = priorityId;
   if (assigneeId !== undefined) data.assigneeId = assigneeId || null;
-  if (teamId !== undefined) data.teamId = teamId || null;
 
   await prisma.$transaction(async (tx) => {
     await tx.ticket.updateMany({ where: { id: { in: ticketIds } }, data });
@@ -419,6 +448,19 @@ async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, tea
 
   await recordAudit({ userId: user.id, action: "TICKET_BULK_UPDATE", entityType: "Ticket", newValues: { ticketIds, ...data } });
   return { updated: ticketIds.length };
+}
+
+async function deleteTicket(user, id) {
+  if (user.role.name !== "ADMIN") throw new ApiError(403, "Only Admins can delete tickets");
+
+  const ticket = await prisma.ticket.findUnique({ where: { id } });
+  if (!ticket) throw new ApiError(404, "Ticket not found");
+
+  // Comments, attachments, history and notifications cascade-delete with the
+  // ticket (see schema.prisma onDelete: Cascade on each relation).
+  await prisma.ticket.delete({ where: { id } });
+
+  await recordAudit({ userId: user.id, action: "TICKET_DELETE", entityType: "Ticket", entityId: id, oldValues: { ticketNumber: ticket.ticketNumber } });
 }
 
 async function addAttachment(user, ticketId, file, commentId = null) {
@@ -447,5 +489,6 @@ module.exports = {
   addComment,
   addAttachment,
   bulkUpdate,
+  deleteTicket,
   scopeWhereForUser,
 };

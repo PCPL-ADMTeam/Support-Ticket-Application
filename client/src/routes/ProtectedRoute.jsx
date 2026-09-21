@@ -30,6 +30,6 @@ export default function ProtectedRoute({ allowedRoles }) {
 
 export function homeForRole(roleName) {
   if (roleName === "ADMIN") return "/admin";
-  if (roleName === "AGENT") return "/agent";
+  if (roleName === "MANAGER") return "/manager";
   return "/portal";
 }

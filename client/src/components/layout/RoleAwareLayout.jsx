@@ -1,7 +1,7 @@
 import { Outlet } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import AdminLayout from "./AdminLayout";
-import AgentLayout from "./AgentLayout";
+import ManagerLayout from "./ManagerLayout";
 import PortalLayout from "./PortalLayout";
 
 // Used for routes reachable from any portal (e.g. /tickets/:id, linked from
@@ -10,6 +10,6 @@ import PortalLayout from "./PortalLayout";
 export default function RoleAwareLayout() {
   const { user } = useAuth();
   if (user.role.name === "ADMIN") return <AdminLayout />;
-  if (user.role.name === "AGENT") return <AgentLayout />;
+  if (user.role.name === "MANAGER") return <ManagerLayout />;
   return <PortalLayout />;
 }

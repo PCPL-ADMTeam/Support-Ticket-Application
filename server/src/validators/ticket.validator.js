@@ -6,22 +6,17 @@ const createTicketValidator = [
   body("categoryId").optional({ nullable: true }).isString(),
   body("priorityId").notEmpty().withMessage("Priority is required"),
   body("toDepartmentId").notEmpty().withMessage("Department is required"),
-  body("managerId").notEmpty().withMessage("Manager is required"),
   body("issueId").notEmpty().withMessage("Issue is required"),
   body("customIssueText").optional({ nullable: true }).isString(),
-  body("assigneeId").optional({ nullable: true }).isString(),
-  body("teamId").optional({ nullable: true }).isString(),
 ];
 
 const updateTicketValidator = [
   param("id").notEmpty(),
   body("status").optional().isIn(["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"]),
   body("assigneeId").optional({ nullable: true }).isString(),
-  body("teamId").optional({ nullable: true }).isString(),
   body("priorityId").optional().isString(),
   body("categoryId").optional().isString(),
   body("toDepartmentId").optional({ nullable: true }).isString(),
-  body("managerId").optional({ nullable: true }).isString(),
   body("issueId").optional({ nullable: true }).isString(),
   body("customIssueText").optional({ nullable: true }).isString(),
 ];
@@ -37,7 +32,6 @@ const bulkUpdateValidator = [
   body("status").optional().isIn(["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"]),
   body("priorityId").optional().isString(),
   body("assigneeId").optional({ nullable: true }).isString(),
-  body("teamId").optional({ nullable: true }).isString(),
 ];
 
 const listTicketsValidator = [

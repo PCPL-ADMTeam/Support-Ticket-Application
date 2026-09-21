@@ -4,6 +4,10 @@ const departmentValidator = [
   body("name").trim().notEmpty().withMessage("Department name is required"),
 ];
 
+const assignManagerValidator = [
+  body("managerId").optional({ nullable: true }).isString(),
+];
+
 const issueValidator = [
   body("departmentId").notEmpty().withMessage("Department is required"),
   body("name").trim().notEmpty().withMessage("Issue name is required"),
@@ -15,4 +19,4 @@ const updateIssueValidator = [
   body("isActive").optional().isBoolean(),
 ];
 
-module.exports = { departmentValidator, issueValidator, updateIssueValidator };
+module.exports = { departmentValidator, assignManagerValidator, issueValidator, updateIssueValidator };

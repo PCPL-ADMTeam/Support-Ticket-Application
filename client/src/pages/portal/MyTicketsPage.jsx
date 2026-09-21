@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Box, Tab, Tabs, Typography } from "@mui/material";
 import TicketsListPage from "../TicketsListPage";
 
-const ASSIGNED_FILTERS = { assigned: "true" };
+const CREATED_FILTERS = { scope: "created" };
+const ASSIGNED_FILTERS = { scope: "assigned" };
 
 export default function MyTicketsPage() {
   const [tab, setTab] = useState(0);
@@ -17,7 +18,7 @@ export default function MyTicketsPage() {
 
       {tab === 0 && (
         <Box role="tabpanel" id="raised-tickets-panel" aria-labelledby="raised-tickets-tab">
-          <TicketsListPage title="Created Tickets" hideHeading />
+          <TicketsListPage title="Created Tickets" hideHeading additionalFilters={CREATED_FILTERS} />
         </Box>
       )}
       {tab === 1 && (

@@ -10,7 +10,7 @@ import TicketDetailPage from "./pages/TicketDetailPage";
 
 import RoleAwareLayout from "./components/layout/RoleAwareLayout";
 import AdminLayout from "./components/layout/AdminLayout";
-import AgentLayout from "./components/layout/AgentLayout";
+import ManagerLayout from "./components/layout/ManagerLayout";
 import PortalLayout from "./components/layout/PortalLayout";
 
 import AdminDashboardPage from "./pages/admin/AdminDashboardPage";
@@ -23,8 +23,11 @@ import SlaPage from "./pages/admin/SlaPage";
 import AuditLogsPage from "./pages/admin/AuditLogsPage";
 import SettingsPage from "./pages/admin/SettingsPage";
 
-import AgentDashboardPage from "./pages/agent/AgentDashboardPage";
-import AgentQueuePage from "./pages/agent/AgentQueuePage";
+import ManagerDashboardPage from "./pages/manager/ManagerDashboardPage";
+import ManagerAllTicketsPage from "./pages/manager/ManagerAllTicketsPage";
+import ManagerUnassignedTicketsPage from "./pages/manager/ManagerUnassignedTicketsPage";
+import ManagerAssignedTicketsPage from "./pages/manager/ManagerAssignedTicketsPage";
+import ManagerOverdueTicketsPage from "./pages/manager/ManagerOverdueTicketsPage";
 
 import PortalDashboardPage from "./pages/portal/PortalDashboardPage";
 import NewTicketPage from "./pages/portal/NewTicketPage";
@@ -67,11 +70,14 @@ export default function App() {
                 </Route>
               </Route>
 
-              {/* Agent workspace */}
-              <Route element={<ProtectedRoute allowedRoles={["AGENT"]} />}>
-                <Route path="/agent" element={<AgentLayout />}>
-                  <Route index element={<AgentDashboardPage />} />
-                  <Route path="queue" element={<AgentQueuePage />} />
+              {/* Manager workspace */}
+              <Route element={<ProtectedRoute allowedRoles={["MANAGER"]} />}>
+                <Route path="/manager" element={<ManagerLayout />}>
+                  <Route index element={<ManagerDashboardPage />} />
+                  <Route path="tickets" element={<ManagerAllTicketsPage />} />
+                  <Route path="unassigned" element={<ManagerUnassignedTicketsPage />} />
+                  <Route path="assigned" element={<ManagerAssignedTicketsPage />} />
+                  <Route path="overdue" element={<ManagerOverdueTicketsPage />} />
                 </Route>
               </Route>
 

@@ -15,6 +15,10 @@ const departments = {
     const department = await departmentService.updateDepartment(req.user.id, req.params.id, req.body);
     res.json({ success: true, data: department });
   },
+  assignManager: async (req, res) => {
+    const department = await departmentService.assignManager(req.user.id, req.params.id, req.body.managerId || null);
+    res.json({ success: true, data: department });
+  },
   remove: async (req, res) => {
     await departmentService.deleteDepartment(req.user.id, req.params.id);
     res.json({ success: true, message: "Department deleted" });

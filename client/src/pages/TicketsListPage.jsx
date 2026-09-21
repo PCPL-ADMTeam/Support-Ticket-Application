@@ -20,6 +20,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import { format } from "date-fns";
+import { useSnackbar } from "notistack";
 import { ticketsApi } from "../api/tickets";
 import { usersApi } from "../api/users";
 import { prioritiesApi } from "../api/catalog";
@@ -28,6 +29,7 @@ import PriorityBadge from "../components/common/PriorityBadge";
 import LoadingState from "../components/common/LoadingState";
 import EmptyState from "../components/common/EmptyState";
 import PaginationBar from "../components/common/PaginationBar";
+import ConfirmDialog from "../components/common/ConfirmDialog";
 import TicketFilters from "../components/tickets/TicketFilters";
 
 const EMPTY_FILTERS = {};
@@ -36,8 +38,9 @@ const EMPTY_FILTERS = {};
 // already enforced by the API (ticket.service.js#scopeWhereForUser) — an
 // End User can only ever receive their own tickets here regardless of what
 // filters are applied.
-export default function TicketsListPage({ title, newTicketPath, showAssignee, showBulkActions, hideHeading = false, additionalFilters = EMPTY_FILTERS }) {
+export default function TicketsListPage({ title, newTicketPath, showAssignee, showCategory, showBulkActions, inlineAssign, hideHeading = false, additionalFilters = EMPTY_FILTERS }) {
   const [searchParams] = useSearchParams();
+  const { enqueueSnackbar } = useSnackbar();
 
   const [filters, setFilters] = useState({
     page: 1,
@@ -46,6 +49,7 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
     sortOrder: "desc",
     status: searchParams.get("status") || "",
     overdue: searchParams.get("overdue") || "",
+    highCritical: searchParams.get("highCritical") || "",
     search: searchParams.get("search") || "",
   });
   const [result, setResult] = useState(null);
@@ -53,12 +57,14 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
   const [selected, setSelected] = useState([]);
   const [agents, setAgents] = useState([]);
   const [priorities, setPriorities] = useState([]);
+  const [assigningId, setAssigningId] = useState(null);
+  const [pendingAssign, setPendingAssign] = useState(null); // { ticket, agentId, agentName }
 
   useEffect(() => {
-    if (!showBulkActions) return;
-    usersApi.assignableAgents().then(({ data }) => setAgents(data.data));
-    prioritiesApi.list().then(({ data }) => setPriorities(data.data));
-  }, [showBulkActions]);
+    if (!showBulkActions && !inlineAssign) return;
+    usersApi.assignableUsers().then(({ data }) => setAgents(data.data));
+    if (showBulkActions) prioritiesApi.list().then(({ data }) => setPriorities(data.data));
+  }, [showBulkActions, inlineAssign]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,6 +109,31 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
 
   const isOverdue = (t) => t.dueAt && new Date(t.dueAt) < new Date() && !["RESOLVED", "CLOSED"].includes(t.status);
 
+  // Inline "Assign To" dropdown — reuses the same PATCH /tickets/:id the
+  // Ticket Detail edit dialog already calls, so server-side permission and
+  // department-membership checks (ticket.service.js#updateTicket) apply
+  // identically here.
+  const requestInlineAssign = (ticket, agentId) => {
+    if (agentId === (ticket.assignee?.id || "")) return;
+    const agent = agents.find((a) => a.id === agentId);
+    setPendingAssign({ ticket, agentId, agentName: agent?.name || "Unassigned" });
+  };
+
+  const confirmInlineAssign = async () => {
+    const { ticket, agentId } = pendingAssign;
+    setAssigningId(ticket.id);
+    try {
+      await ticketsApi.update(ticket.id, { assigneeId: agentId || null });
+      enqueueSnackbar(agentId ? `Ticket assigned to ${pendingAssign.agentName}` : "Ticket unassigned", { variant: "success" });
+      await load();
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to assign ticket", { variant: "error" });
+    } finally {
+      setAssigningId(null);
+      setPendingAssign(null);
+    }
+  };
+
   return (
     <Box>
       {!hideHeading && (
@@ -116,7 +147,7 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
         </Box>
       )}
 
-      <TicketFilters filters={filters} onChange={setFilters} showAssignee={showAssignee} />
+      <TicketFilters filters={filters} onChange={setFilters} showAssignee={showAssignee} showCategory={showCategory} />
 
       {showBulkActions && selected.length > 0 && (
         <Toolbar sx={{ bgcolor: "action.selected", borderRadius: 1, mb: 1, flexWrap: "wrap", gap: 1 }}>
@@ -196,7 +227,26 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
                   </TableCell>
                   <TableCell sx={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</TableCell>
                   <TableCell>{t.toDepartment?.name || "—"}</TableCell>
-                  {showAssignee && <TableCell>{t.assignee?.name || "—"}</TableCell>}
+                  {showAssignee && (
+                    <TableCell sx={{ minWidth: 170 }}>
+                      {inlineAssign ? (
+                        <TextField
+                          select
+                          size="small"
+                          fullWidth
+                          value={t.assignee?.id || ""}
+                          onChange={(e) => requestInlineAssign(t, e.target.value)}
+                          disabled={assigningId === t.id}
+                          SelectProps={{ displayEmpty: true }}
+                        >
+                          <MenuItem value="">Unassigned</MenuItem>
+                          {agents.map((a) => <MenuItem key={a.id} value={a.id}>{a.name}</MenuItem>)}
+                        </TextField>
+                      ) : (
+                        t.assignee?.name || "—"
+                      )}
+                    </TableCell>
+                  )}
                   <TableCell><PriorityBadge name={t.priority.name} color={t.priority.color} /></TableCell>
                   <TableCell><StatusBadge status={t.status} /></TableCell>
                   <TableCell>{format(new Date(t.createdAt), "MMM d, yyyy")}</TableCell>
@@ -213,6 +263,21 @@ export default function TicketsListPage({ title, newTicketPath, showAssignee, sh
             onLimitChange={(limit) => setFilters((f) => ({ ...f, limit, page: 1 }))}
           />
         </Paper>
+      )}
+
+      {inlineAssign && (
+        <ConfirmDialog
+          open={Boolean(pendingAssign)}
+          title={pendingAssign?.agentId ? "Assign ticket?" : "Unassign ticket?"}
+          message={
+            pendingAssign?.agentId
+              ? `Assign ${pendingAssign.ticket.ticketNumber} to ${pendingAssign.agentName}?`
+              : `Remove the current assignee from ${pendingAssign?.ticket.ticketNumber}?`
+          }
+          confirmLabel={pendingAssign?.agentId ? "Assign" : "Unassign"}
+          onClose={() => setPendingAssign(null)}
+          onConfirm={confirmInlineAssign}
+        />
       )}
     </Box>
   );

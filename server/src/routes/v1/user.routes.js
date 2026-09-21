@@ -15,8 +15,8 @@ router.use(authenticate);
 // Any authenticated user can update their own profile.
 router.patch("/me/profile", updateProfileValidator, validate, userController.updateProfile);
 
-// Agents/Admins need this to populate assignee pickers.
-router.get("/assignable-agents", requireRole("ADMIN", "AGENT"), userController.assignableAgents);
+// Managers/Admins need this to populate assignee pickers.
+router.get("/assignable", requireRole("ADMIN", "MANAGER"), userController.assignableUsers);
 
 // Everything else is Admin-only user management.
 router.use(requireRole("ADMIN"));

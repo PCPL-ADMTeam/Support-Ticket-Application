@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import {
   Grid,
   Paper,
@@ -16,10 +16,11 @@ import {
   DialogActions,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
+import DeleteIcon from "@mui/icons-material/Delete";
 import { format } from "date-fns";
 import { useSnackbar } from "notistack";
 import { ticketsApi } from "../api/tickets";
-import { prioritiesApi } from "../api/catalog";
+import { prioritiesApi, categoriesApi } from "../api/catalog";
 import { usersApi } from "../api/users";
 import { useAuth } from "../context/AuthContext";
 import LoadingState from "../components/common/LoadingState";
@@ -34,6 +35,7 @@ const STATUS_OPTIONS = ["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", 
 
 export default function TicketDetailPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const { enqueueSnackbar } = useSnackbar();
 
@@ -43,16 +45,35 @@ export default function TicketDetailPage() {
 
   const [agents, setAgents] = useState([]);
   const [priorities, setPriorities] = useState([]);
+  const [categories, setCategories] = useState([]);
 
   const [editOpen, setEditOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState("");
   const [draftPriorityId, setDraftPriorityId] = useState("");
   const [draftAssigneeId, setDraftAssigneeId] = useState("");
+  const [draftCategoryId, setDraftCategoryId] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
 
-  const isStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const isAdmin = user.role.name === "ADMIN";
   const isOwner = ticket?.requester.id === user.id;
   const isAssignedToMe = Boolean(ticket?.assignee?.id) && ticket.assignee.id === user.id;
+  // A Manager only has power over tickets routed to the one department they
+  // manage — mirrors ticket.service.js#isDeptManager.
+  const isDeptManager = user.role.name === "MANAGER" && Boolean(user.departmentId) && ticket?.toDepartment?.id === user.departmentId;
+  const isPrivileged = isAdmin || isDeptManager || isAssignedToMe; // internal notes
+
+  // Field-level permissions, mirroring the server-side gates in
+  // ticket.service.js#updateTicket exactly:
+  const canChangeStatus = isAdmin || isDeptManager || isAssignedToMe;
+  const canChangeAssignee = isAdmin || isDeptManager;
+  const canChangePriority = isAdmin;
+  const canChangeCategory = isAdmin;
+  const canEditTicket = canChangeStatus || canChangeAssignee || canChangePriority || canChangeCategory;
+
+  const flatCategories = categories.flatMap((c) => [c, ...(c.children || [])]);
 
   const load = useCallback(async () => {
     const { data } = await ticketsApi.getById(id);
@@ -62,8 +83,11 @@ export default function TicketDetailPage() {
 
   useEffect(() => {
     load();
-    if (isStaff) {
-      usersApi.assignableAgents().then(({ data }) => setAgents(data.data));
+    if (isAdmin || user.role.name === "MANAGER") {
+      usersApi.assignableUsers().then(({ data }) => setAgents(data.data));
+    }
+    if (isAdmin) {
+      categoriesApi.list().then(({ data }) => setCategories(data.data));
     }
     prioritiesApi.list().then(({ data }) => setPriorities(data.data));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -97,14 +121,16 @@ export default function TicketDetailPage() {
     setDraftStatus(ticket.status);
     setDraftPriorityId(ticket.priority.id);
     setDraftAssigneeId(ticket.assignee?.id || "");
+    setDraftCategoryId(ticket.category?.id || "");
     setEditOpen(true);
   };
 
   const handleSaveEdit = async () => {
     const payload = {};
-    if (draftStatus !== ticket.status) payload.status = draftStatus;
-    if (draftPriorityId !== ticket.priority.id) payload.priorityId = draftPriorityId;
-    if (draftAssigneeId !== (ticket.assignee?.id || "")) payload.assigneeId = draftAssigneeId || null;
+    if (canChangeStatus && draftStatus !== ticket.status) payload.status = draftStatus;
+    if (canChangePriority && draftPriorityId !== ticket.priority.id) payload.priorityId = draftPriorityId;
+    if (canChangeAssignee && draftAssigneeId !== (ticket.assignee?.id || "")) payload.assigneeId = draftAssigneeId || null;
+    if (canChangeCategory && draftCategoryId !== (ticket.category?.id || "")) payload.categoryId = draftCategoryId || null;
 
     if (Object.keys(payload).length === 0) {
       setEditOpen(false);
@@ -120,18 +146,37 @@ export default function TicketDetailPage() {
     }
   };
 
+  const handleDeleteTicket = async () => {
+    setDeleting(true);
+    try {
+      await ticketsApi.remove(id);
+      enqueueSnackbar("Ticket deleted", { variant: "success" });
+      navigate("/admin/tickets");
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to delete ticket", { variant: "error" });
+    } finally {
+      setDeleting(false);
+      setDeleteOpen(false);
+    }
+  };
+
   if (loading || !ticket) return <LoadingState minHeight={400} />;
 
-  const canReopen = isOwner && !isStaff && ["RESOLVED", "CLOSED"].includes(ticket.status);
+  const canReopen = isOwner && !isPrivileged && ["RESOLVED", "CLOSED"].includes(ticket.status);
 
   return (
     <Box>
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ sm: "center" }} spacing={1} sx={{ mb: 2 }}>
         <Stack direction="row" alignItems="center" spacing={0.5}>
           <Typography variant="h4">{ticket.ticketNumber}</Typography>
-          {isAssignedToMe && (
+          {canEditTicket && (
             <IconButton size="small" onClick={openEditDialog} aria-label="Edit ticket">
               <EditIcon fontSize="small" />
+            </IconButton>
+          )}
+          {isAdmin && (
+            <IconButton size="small" onClick={() => setDeleteOpen(true)} aria-label="Delete ticket" color="error">
+              <DeleteIcon fontSize="small" />
             </IconButton>
           )}
         </Stack>
@@ -156,7 +201,7 @@ export default function TicketDetailPage() {
 
             <CommentThread
               comments={ticket.comments}
-              isStaff={isStaff}
+              isStaff={isPrivileged}
               onAddComment={handleAddComment}
               submitting={commentSubmitting}
             />
@@ -190,45 +235,80 @@ export default function TicketDetailPage() {
         <DialogTitle>Edit {ticket.ticketNumber}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField
-              select
-              size="small"
-              label="Status"
-              value={draftStatus}
-              onChange={(e) => setDraftStatus(e.target.value)}
-            >
-              {STATUS_OPTIONS.map((s) => (
-                <MenuItem key={s} value={s}>{s.replace("_", " ")}</MenuItem>
-              ))}
-            </TextField>
+            {canChangeStatus && (
+              <TextField
+                select
+                size="small"
+                label="Status"
+                value={draftStatus}
+                onChange={(e) => setDraftStatus(e.target.value)}
+              >
+                {STATUS_OPTIONS.map((s) => (
+                  <MenuItem key={s} value={s}>{s.replace("_", " ")}</MenuItem>
+                ))}
+              </TextField>
+            )}
 
-            <TextField
-              select
-              size="small"
-              label="Priority"
-              value={draftPriorityId}
-              onChange={(e) => setDraftPriorityId(e.target.value)}
-            >
-              {priorities.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
-            </TextField>
+            {canChangePriority && (
+              <TextField
+                select
+                size="small"
+                label="Priority"
+                value={draftPriorityId}
+                onChange={(e) => setDraftPriorityId(e.target.value)}
+              >
+                {priorities.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
+              </TextField>
+            )}
 
-            <TextField
-              select
-              size="small"
-              label="Assignee"
-              value={draftAssigneeId}
-              onChange={(e) => setDraftAssigneeId(e.target.value)}
-              SelectProps={{ displayEmpty: true }}
-              InputLabelProps={{ shrink: true }}
-            >
-              <MenuItem value="">Unassigned</MenuItem>
-              {agents.map((a) => <MenuItem key={a.id} value={a.id}>{a.name}</MenuItem>)}
-            </TextField>
+            {canChangeAssignee && (
+              <TextField
+                select
+                size="small"
+                label="Assignee"
+                value={draftAssigneeId}
+                onChange={(e) => setDraftAssigneeId(e.target.value)}
+                SelectProps={{ displayEmpty: true }}
+                InputLabelProps={{ shrink: true }}
+                helperText={!isAdmin ? "Only Users in your department are listed" : undefined}
+              >
+                <MenuItem value="">Unassigned</MenuItem>
+                {agents.map((a) => <MenuItem key={a.id} value={a.id}>{a.name}</MenuItem>)}
+              </TextField>
+            )}
+
+            {canChangeCategory && (
+              <TextField
+                select
+                size="small"
+                label="Category"
+                value={draftCategoryId}
+                onChange={(e) => setDraftCategoryId(e.target.value)}
+                SelectProps={{ displayEmpty: true }}
+                InputLabelProps={{ shrink: true }}
+              >
+                <MenuItem value="">No category</MenuItem>
+                {flatCategories.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+              </TextField>
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleSaveEdit} disabled={savingEdit}>Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Delete {ticket.ticketNumber}?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            This permanently deletes the ticket along with its comments, attachments and history. This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOpen(false)}>Cancel</Button>
+          <Button variant="contained" color="error" onClick={handleDeleteTicket} disabled={deleting}>Delete</Button>
         </DialogActions>
       </Dialog>
     </Box>

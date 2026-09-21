@@ -16,13 +16,13 @@ import TrendLineChart from "../components/dashboard/TrendLineChart";
 import AgentWorkloadTable from "../components/dashboard/AgentWorkloadTable";
 import DateRangeFilter from "../components/dashboard/DateRangeFilter";
 
-const SCOPES = ["assigned", "created"];
+const SCOPES = ["created", "assigned"];
 
 // Shared dashboard used by all three portals. `variant="full"` (Admin) shows
 // every widget; `variant="personal"` (Agent/User) shows a lighter set scoped
 // server-side to the caller's own tickets — see dashboard.service.js.
-// The My Tickets / My Requests tabs re-fetch stats scoped to tickets
-// assigned to, or raised by, the current user (dashboard.service.js scope
+// The Raised by Me / Assigned to Me tabs re-fetch stats scoped to tickets
+// raised by, or assigned to, the current user (dashboard.service.js scope
 // param) — every number below reflects real tickets, nothing hardcoded.
 export default function DashboardPage({ variant = "personal", ticketsPath }) {
   const [days, setDays] = useState(30);
@@ -54,8 +54,8 @@ export default function DashboardPage({ variant = "personal", ticketsPath }) {
       </Box>
 
       <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ borderBottom: 1, borderColor: "divider" }}>
-        <Tab label="My Tickets" id="dashboard-my-tickets-tab" />
-        <Tab label="My Requests" id="dashboard-my-requests-tab" />
+        <Tab label="My Raised Tickets" id="dashboard-raised-tab" />
+        <Tab label="Assigned to Me" id="dashboard-assigned-tab" />
       </Tabs>
 
       {loading || !stats ? (

@@ -15,6 +15,7 @@ import {
   DialogContent,
   DialogActions,
   TextField,
+  MenuItem,
   Stack,
   FormControlLabel,
   Switch,
@@ -22,8 +23,10 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import SupervisorAccountIcon from "@mui/icons-material/SupervisorAccount";
 import { useSnackbar } from "notistack";
 import { departmentsApi, issuesApi } from "../../api/departments";
+import { usersApi } from "../../api/users";
 import LoadingState from "../../components/common/LoadingState";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
 
@@ -33,6 +36,7 @@ const emptyIssueForm = { id: null, departmentId: null, name: "", isOther: false 
 export default function DepartmentsPage() {
   const { enqueueSnackbar } = useSnackbar();
   const [departments, setDepartments] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [deptDialogOpen, setDeptDialogOpen] = useState(false);
@@ -43,6 +47,10 @@ export default function DepartmentsPage() {
   const [issueForm, setIssueForm] = useState(emptyIssueForm);
   const [issueDeleteTarget, setIssueDeleteTarget] = useState(null);
 
+  const [managerDialogOpen, setManagerDialogOpen] = useState(false);
+  const [managerTarget, setManagerTarget] = useState(null);
+  const [managerSelection, setManagerSelection] = useState("");
+
   const load = useCallback(async () => {
     setLoading(true);
     const { data } = await departmentsApi.list();
@@ -51,9 +59,27 @@ export default function DepartmentsPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { usersApi.list({ limit: 200 }).then(({ data }) => setUsers(data.data)); }, []);
 
   const openCreateDept = () => { setDeptForm(emptyDeptForm); setDeptDialogOpen(true); };
   const openEditDept = (d) => { setDeptForm({ id: d.id, name: d.name }); setDeptDialogOpen(true); };
+
+  const openManagerDialog = (d) => {
+    setManagerTarget(d);
+    setManagerSelection(d.managerId || "");
+    setManagerDialogOpen(true);
+  };
+
+  const handleAssignManager = async () => {
+    try {
+      await departmentsApi.assignManager(managerTarget.id, managerSelection || null);
+      setManagerDialogOpen(false);
+      load();
+      enqueueSnackbar("Department manager updated", { variant: "success" });
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to update manager", { variant: "error" });
+    }
+  };
 
   const handleSaveDept = async () => {
     try {
@@ -125,9 +151,10 @@ export default function DepartmentsPage() {
             <ListItem>
               <ListItemText
                 primary={<Typography fontWeight={700}>{d.name}</Typography>}
-                secondary={d.managers.length ? `Managers: ${d.managers.map((m) => m.name).join(", ")}` : "No managers assigned yet"}
+                secondary={d.manager ? `Manager: ${d.manager.name} (${d.manager.email})` : "No manager assigned yet"}
               />
               <ListItemSecondaryAction>
+                <IconButton size="small" onClick={() => openManagerDialog(d)} title="Assign / change manager"><SupervisorAccountIcon fontSize="small" /></IconButton>
                 <IconButton size="small" onClick={() => openCreateIssue(d.id)} title="Add issue"><AddIcon fontSize="small" /></IconButton>
                 <IconButton size="small" onClick={() => openEditDept(d)}><EditIcon fontSize="small" /></IconButton>
                 <IconButton size="small" onClick={() => setDeptDeleteTarget(d)}><DeleteIcon fontSize="small" /></IconButton>
@@ -196,6 +223,34 @@ export default function DepartmentsPage() {
         <DialogActions>
           <Button onClick={() => setIssueDialogOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleSaveIssue}>Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Assign / change manager dialog */}
+      <Dialog open={managerDialogOpen} onClose={() => setManagerDialogOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Assign Manager — {managerTarget?.name}</DialogTitle>
+        <DialogContent>
+          <TextField
+            select
+            label="Manager"
+            value={managerSelection}
+            onChange={(e) => setManagerSelection(e.target.value)}
+            fullWidth
+            sx={{ mt: 1 }}
+            SelectProps={{ displayEmpty: true }}
+            helperText="Promotes the selected user to MANAGER and moves them into this department. The outgoing manager (if any) reverts to a regular User."
+          >
+            <MenuItem value="">No manager</MenuItem>
+            {users.map((u) => (
+              <MenuItem key={u.id} value={u.id} disabled={u.role.name === "ADMIN"}>
+                {u.name} ({u.email}){u.role.name === "MANAGER" ? " — currently a Manager" : ""}
+              </MenuItem>
+            ))}
+          </TextField>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setManagerDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleAssignManager}>Save</Button>
         </DialogActions>
       </Dialog>
 

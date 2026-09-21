@@ -8,6 +8,7 @@ export const ticketsApi = {
   update: (id, payload) => api.patch(`/tickets/${id}`, payload),
   addComment: (id, payload) => api.post(`/tickets/${id}/comments`, payload),
   bulkUpdate: (payload) => api.post("/tickets/bulk", payload),
+  remove: (id) => api.delete(`/tickets/${id}`),
   uploadAttachment: (id, file, commentId) => {
     const formData = new FormData();
     formData.append("file", file);

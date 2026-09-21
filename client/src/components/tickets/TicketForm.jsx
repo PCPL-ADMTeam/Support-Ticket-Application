@@ -123,7 +123,6 @@ export default function TicketForm({
   const [form, setForm] = useState({
     priorityId: "",
     toDepartmentId: "",
-    managerId: "",
     issueId: "",
     customIssueText: "",
     description: "",
@@ -142,14 +141,6 @@ export default function TicketForm({
         (d) => d.id === form.toDepartmentId
       ) || null,
     [departments, form.toDepartmentId]
-  );
-
-  const selectedManager = useMemo(
-    () =>
-      selectedDepartment?.managers.find(
-        (m) => m.id === form.managerId
-      ) || null,
-    [selectedDepartment, form.managerId]
   );
 
   const selectedIssue = useMemo(
@@ -194,7 +185,6 @@ export default function TicketForm({
     setForm((prev) => ({
       ...prev,
       toDepartmentId: value?.id || "",
-      managerId: "",
       issueId: "",
       customIssueText: "",
     }));
@@ -202,7 +192,6 @@ export default function TicketForm({
     setErrors((prev) => ({
       ...prev,
       toDepartmentId: "",
-      managerId: "",
       issueId: "",
       customIssueText: "",
     }));
@@ -311,11 +300,6 @@ export default function TicketForm({
         "Department is required";
     }
 
-    if (!form.managerId) {
-      newErrors.managerId =
-        "Manager is required";
-    }
-
     if (!form.issueId) {
       newErrors.issueId = "Issue is required";
     }
@@ -379,10 +363,6 @@ export default function TicketForm({
     formData.append(
       "toDepartmentId",
       form.toDepartmentId
-    );
-    formData.append(
-      "managerId",
-      form.managerId
     );
     formData.append(
       "issueId",
@@ -489,8 +469,9 @@ export default function TicketForm({
                 <Typography
                   sx={sectionSubtitleSx}
                 >
-                  Select the department, manager, issue
-                  and priority for your request.
+                  Select the department, issue
+                  and priority for your request. It will be
+                  routed to that department's manager.
                 </Typography>
               </Box>
 
@@ -640,56 +621,6 @@ export default function TicketForm({
                   />
                 </Box>
               </Stack>
-
-              {/* =================================================
-                  MANAGER
-              ================================================= */}
-
-              <Box>
-                <Typography sx={fieldLabelSx}>
-                  Manager
-                </Typography>
-
-                <Autocomplete
-                  fullWidth
-                  size="small"
-                  disabled={!selectedDepartment}
-                  options={
-                    selectedDepartment?.managers ||
-                    []
-                  }
-                  getOptionLabel={(m) => m.name}
-                  value={selectedManager}
-                  onChange={(_, value) => {
-                    setForm((prev) => ({
-                      ...prev,
-                      managerId:
-                        value?.id || "",
-                    }));
-
-                    setErrors((prev) => ({
-                      ...prev,
-                      managerId: "",
-                    }));
-                  }}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      placeholder={
-                        selectedDepartment
-                          ? "Select manager"
-                          : "Select department first"
-                      }
-                      error={Boolean(
-                        errors.managerId
-                      )}
-                      helperText={
-                        errors.managerId
-                      }
-                    />
-                  )}
-                />
-              </Box>
 
               {/* =================================================
                   ISSUE

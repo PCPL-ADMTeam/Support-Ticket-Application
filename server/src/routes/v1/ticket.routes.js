@@ -20,6 +20,7 @@ router.post("/", upload.array("attachments", 5), createTicketValidator, validate
 router.post("/bulk", requireRole("ADMIN"), bulkUpdateValidator, validate, ticketController.bulkUpdate);
 router.get("/:id", ticketController.getById);
 router.patch("/:id", updateTicketValidator, validate, ticketController.update);
+router.delete("/:id", requireRole("ADMIN"), ticketController.remove);
 
 router.post("/:id/comments", commentValidator, validate, ticketController.addComment);
 router.post("/:id/attachments", upload.single("file"), ticketController.uploadAttachment);

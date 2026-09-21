@@ -28,8 +28,8 @@ async function updateProfile(req, res) {
   res.json({ success: true, data: user });
 }
 
-async function assignableAgents(_req, res) {
-  res.json({ success: true, data: await userService.listAssignableAgents() });
+async function assignableUsers(req, res) {
+  res.json({ success: true, data: await userService.listAssignableUsers(req.user) });
 }
 
-module.exports = { list, getById, create, update, deactivate, updateProfile, assignableAgents };
+module.exports = { list, getById, create, update, deactivate, updateProfile, assignableUsers };

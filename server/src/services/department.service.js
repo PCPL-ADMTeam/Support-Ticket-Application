@@ -6,11 +6,9 @@ const departmentSelect = {
   id: true,
   name: true,
   createdAt: true,
-  managers: {
-    where: { isManager: true },
-    select: { id: true, name: true, email: true },
-    orderBy: { name: "asc" },
-  },
+  managerId: true,
+  manager: { select: { id: true, name: true, email: true } },
+  users: { select: { id: true, name: true, email: true }, orderBy: { name: "asc" } },
   issues: {
     where: { isActive: true },
     select: { id: true, name: true, isOther: true },
@@ -18,26 +16,11 @@ const departmentSelect = {
   },
 };
 
-// Prisma relation name on Department is `users`, but we only ever want the
-// managers for the ticket form / admin UI — select via the relation with a
-// filter instead of exposing every department member.
-function toDepartmentShape(department) {
-  const { users, ...rest } = department;
-  return { ...rest, managers: users };
-}
-
 async function listDepartments() {
-  const departments = await prisma.department.findMany({
-    select: {
-      id: true,
-      name: true,
-      createdAt: true,
-      users: departmentSelect.managers,
-      issues: departmentSelect.issues,
-    },
+  return prisma.department.findMany({
+    select: departmentSelect,
     orderBy: { name: "asc" },
   });
-  return departments.map(toDepartmentShape);
 }
 
 async function createDepartment(actorId, { name }) {
@@ -53,6 +36,51 @@ async function updateDepartment(actorId, id, { name }) {
   const department = await prisma.department.update({ where: { id }, data });
   await recordAudit({ userId: actorId, action: "DEPARTMENT_UPDATED", entityType: "Department", entityId: id, newValues: { name } });
   return department;
+}
+
+// Assigns (or clears, with managerId=null) the single Manager of a
+// department. Setting a manager promotes that User to the MANAGER role and
+// moves them into this department; the outgoing manager (if different) is
+// demoted back to USER so a department never has more than one manager and
+// a user never manages more than one department.
+async function assignManager(actorId, departmentId, managerId) {
+  const department = await prisma.department.findUnique({ where: { id: departmentId } });
+  if (!department) throw new ApiError(404, "Department not found");
+
+  if (managerId) {
+    const candidate = await prisma.user.findUnique({
+      where: { id: managerId },
+      include: { managedDepartment: { select: { id: true, name: true } } },
+    });
+    if (!candidate) throw new ApiError(404, "User not found");
+    if (candidate.managedDepartment && candidate.managedDepartment.id !== departmentId) {
+      throw new ApiError(409, `${candidate.name} already manages the ${candidate.managedDepartment.name} department`);
+    }
+  }
+
+  const managerRole = await prisma.role.findUnique({ where: { name: "MANAGER" } });
+  const userRole = await prisma.role.findUnique({ where: { name: "USER" } });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    if (department.managerId && department.managerId !== managerId) {
+      await tx.user.update({ where: { id: department.managerId }, data: { roleId: userRole.id } });
+    }
+    if (managerId) {
+      await tx.user.update({ where: { id: managerId }, data: { roleId: managerRole.id, departmentId } });
+    }
+    return tx.department.update({ where: { id: departmentId }, data: { managerId: managerId || null }, select: departmentSelect });
+  });
+
+  await recordAudit({
+    userId: actorId,
+    action: "DEPARTMENT_MANAGER_ASSIGNED",
+    entityType: "Department",
+    entityId: departmentId,
+    oldValues: { managerId: department.managerId },
+    newValues: { managerId: managerId || null },
+  });
+
+  return updated;
 }
 
 async function deleteDepartment(actorId, id) {
@@ -72,4 +100,4 @@ async function deleteDepartment(actorId, id) {
   await recordAudit({ userId: actorId, action: "DEPARTMENT_DELETED", entityType: "Department", entityId: id });
 }
 
-module.exports = { listDepartments, createDepartment, updateDepartment, deleteDepartment };
+module.exports = { listDepartments, createDepartment, updateDepartment, assignManager, deleteDepartment };

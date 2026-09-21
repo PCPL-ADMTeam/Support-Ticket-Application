@@ -22,5 +22,5 @@ const navItems = [
 ];
 
 export default function AdminLayout() {
-  return <AppShell navItems={navItems} />;
+  return <AppShell navItems={navItems} ticketSearchPath="/admin/tickets" />;
 }

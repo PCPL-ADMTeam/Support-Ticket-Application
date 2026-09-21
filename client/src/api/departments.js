@@ -4,6 +4,7 @@ export const departmentsApi = {
   list: () => api.get("/departments"),
   create: (payload) => api.post("/departments", payload),
   update: (id, payload) => api.patch(`/departments/${id}`, payload),
+  assignManager: (id, managerId) => api.patch(`/departments/${id}/manager`, { managerId }),
   remove: (id) => api.delete(`/departments/${id}`),
 };
 

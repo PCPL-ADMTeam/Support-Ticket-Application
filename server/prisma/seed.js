@@ -1,7 +1,7 @@
-// Idempotent seed script: safe to re-run. Creates the three system roles,
-// a default admin account, sample teams/categories/priorities/SLA policies,
-// a few extra users, and a handful of sample tickets to populate the
-// dashboard on first run.
+// Idempotent seed script: safe to re-run. Creates the three system roles
+// (ADMIN / MANAGER / USER), a default admin account, sample departments each
+// with exactly one Manager, a handful of department Users, and sample
+// tickets to populate the dashboard on first run.
 require("dotenv").config();
 const bcrypt = require("bcryptjs");
 const { PrismaClient } = require("@prisma/client");
@@ -13,42 +13,37 @@ async function upsertRole(name, label) {
   return prisma.role.upsert({ where: { name }, update: {}, create: { name, label } });
 }
 
-async function upsertUser({ name, email, password, roleId }) {
+async function upsertUser({ name, email, password, roleId, departmentId }) {
   const passwordHash = await bcrypt.hash(password, 12);
   return prisma.user.upsert({
     where: { email },
-    update: {},
-    create: { name, email, passwordHash, roleId },
+    update: { roleId, departmentId: departmentId ?? undefined },
+    create: { name, email, passwordHash, roleId, departmentId: departmentId || null },
   });
 }
 
 async function main() {
   console.log("Seeding database...");
 
-  const [adminRole, agentRole, userRole] = await Promise.all([
+  const [adminRole, managerRole, userRole] = await Promise.all([
     upsertRole("ADMIN", "Administrator"),
-    upsertRole("AGENT", "Agent / Technician"),
+    upsertRole("MANAGER", "Department Manager"),
     upsertRole("USER", "End User"),
   ]);
+
+  // One-time cleanup for environments seeded before the Admin/Manager/User
+  // role model: reassign any leftover AGENT-role users to USER (a Manager
+  // among them gets promoted properly below via Department.managerId) and
+  // drop the now-unused role row so it can never be selected again.
+  const legacyAgentRole = await prisma.role.findUnique({ where: { name: "AGENT" } });
+  if (legacyAgentRole) {
+    await prisma.user.updateMany({ where: { roleId: legacyAgentRole.id }, data: { roleId: userRole.id } });
+    await prisma.role.delete({ where: { id: legacyAgentRole.id } });
+  }
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL || "admin@helpdesk.local";
   const adminPassword = process.env.SEED_ADMIN_PASSWORD || "Admin@12345";
   const admin = await upsertUser({ name: "System Administrator", email: adminEmail, password: adminPassword, roleId: adminRole.id });
-
-  const agent1 = await upsertUser({ name: "Alex Agent", email: "alex.agent@helpdesk.local", password: "Agent@12345", roleId: agentRole.id });
-  const agent2 = await upsertUser({ name: "Sam Support", email: "sam.support@helpdesk.local", password: "Agent@12345", roleId: agentRole.id });
-  const endUser1 = await upsertUser({ name: "Jamie User", email: "jamie.user@helpdesk.local", password: "User@12345", roleId: userRole.id });
-  const endUser2 = await upsertUser({ name: "Riley Requester", email: "riley.requester@helpdesk.local", password: "User@12345", roleId: userRole.id });
-
-  const team = await prisma.team.upsert({
-    where: { name: "Service Desk" },
-    update: {},
-    create: {
-      name: "Service Desk",
-      description: "Tier-1 IT support team",
-      members: { create: [{ userId: agent1.id }, { userId: agent2.id }] },
-    },
-  });
 
   const categoryDefs = [
     { name: "Hardware", children: ["Laptop", "Printer", "Peripherals"] },
@@ -101,14 +96,16 @@ async function main() {
     priorities[def.name] = priority;
   }
 
-  // Departments + their manager users and predefined issue lists, powering
-  // the ticket form's To Department / Manager / Issue dropdowns. Every
-  // department gets a trailing "Others" issue (isOther: true) for the
-  // custom-issue-text fallback.
+  // Departments: each gets exactly ONE manager user and a couple of regular
+  // (role USER) members who can be assigned tickets by that manager, plus a
+  // predefined issue list powering the ticket form's Department / Issue
+  // dropdowns. Every department gets a trailing "Others" issue (isOther:
+  // true) for the custom-issue-text fallback.
   const departmentDefs = [
     {
       name: "IT",
-      managers: ["IT Manager", "Infrastructure Manager", "Application Manager"],
+      manager: { name: "IT Manager", email: "it.manager@helpdesk.local" },
+      members: [{ name: "Alex Tech", email: "alex.tech@helpdesk.local" }, { name: "Sam Support", email: "sam.support@helpdesk.local" }],
       issues: [
         "Laptop / Desktop Issue", "Network Issue", "Internet Connectivity", "Software Installation",
         "Application Access", "Email / Outlook Issue", "VPN Issue", "Password Reset",
@@ -117,7 +114,8 @@ async function main() {
     },
     {
       name: "HR",
-      managers: ["HR Manager", "HR Operations Manager"],
+      manager: { name: "HR Manager", email: "hr.manager@helpdesk.local" },
+      members: [{ name: "Priya HR", email: "priya.hr@helpdesk.local" }],
       issues: [
         "Leave Issue", "Attendance Issue", "Payroll Issue", "Employee Information Update",
         "Onboarding Issue", "Offboarding Issue", "Policy Clarification", "Document Request",
@@ -125,35 +123,50 @@ async function main() {
     },
     {
       name: "Finance",
-      managers: ["Finance Manager", "Accounts Manager"],
+      manager: { name: "Finance Manager", email: "finance.manager@helpdesk.local" },
+      members: [{ name: "Accounts Executive", email: "accounts.exec@helpdesk.local" }],
       issues: ["Invoice Issue", "Payment Issue", "Expense Claim", "Purchase Request", "Billing Issue", "Budget Request"],
     },
     {
       name: "Administration",
-      managers: ["Admin Manager", "Facilities Manager"],
+      manager: { name: "Admin Manager", email: "admin.manager@helpdesk.local" },
+      members: [{ name: "Facilities Executive", email: "facilities.exec@helpdesk.local" }],
       issues: ["Facility Issue", "Office Equipment", "Access Card", "Transport Issue", "Housekeeping Issue", "Maintenance Issue"],
     },
     {
       name: "Sales",
-      managers: ["Sales Manager", "Sales Operations Manager"],
+      manager: { name: "Sales Manager", email: "sales.manager@helpdesk.local" },
+      members: [{ name: "Sales Executive", email: "sales.exec@helpdesk.local" }],
       issues: ["CRM Issue", "Customer Data Issue", "Sales Application Access", "Report Issue", "Customer Support Issue"],
     },
   ];
 
   const managerPassword = process.env.SEED_MANAGER_PASSWORD || "Manager@12345";
+  const memberPassword = process.env.SEED_USER_PASSWORD || "User@12345";
+
   const departments = {};
+  const managers = {};
+  const members = {}; // departmentName -> [User]
+
   for (const def of departmentDefs) {
     const department = await prisma.department.upsert({ where: { name: def.name }, update: {}, create: { name: def.name } });
     departments[def.name] = department;
 
-    for (const managerName of def.managers) {
-      const email = `${managerName.toLowerCase().replace(/[^a-z]+/g, ".").replace(/^\.|\.$/g, "")}@helpdesk.local`;
-      const passwordHash = await bcrypt.hash(managerPassword, 12);
-      await prisma.user.upsert({
-        where: { email },
-        update: { departmentId: department.id, isManager: true },
-        create: { name: managerName, email, passwordHash, roleId: agentRole.id, departmentId: department.id, isManager: true },
-      });
+    const manager = await upsertUser({
+      name: def.manager.name,
+      email: def.manager.email,
+      password: managerPassword,
+      roleId: managerRole.id,
+      departmentId: department.id,
+    });
+    managers[def.name] = manager;
+
+    await prisma.department.update({ where: { id: department.id }, data: { managerId: manager.id } });
+
+    members[def.name] = [];
+    for (const m of def.members) {
+      const member = await upsertUser({ name: m.name, email: m.email, password: memberPassword, roleId: userRole.id, departmentId: department.id });
+      members[def.name].push(member);
     }
 
     for (const issueName of def.issues) {
@@ -170,22 +183,25 @@ async function main() {
     });
   }
 
-  // Give the demo end users/agents a department so "Raise a Ticket" has a
-  // populated From Department right away.
-  await prisma.user.update({ where: { id: endUser1.id }, data: { departmentId: departments.IT.id } });
-  await prisma.user.update({ where: { id: endUser2.id }, data: { departmentId: departments.HR.id } });
-  await prisma.user.update({ where: { id: agent1.id }, data: { departmentId: departments.IT.id } });
-  await prisma.user.update({ where: { id: agent2.id }, data: { departmentId: departments.IT.id } });
+  // A couple of plain requesters (role USER) who raise tickets across
+  // departments but aren't anyone's direct report — same as the previous
+  // "end user" seed accounts.
+  const jamie = await upsertUser({ name: "Jamie User", email: "jamie.user@helpdesk.local", password: memberPassword, roleId: userRole.id, departmentId: departments.IT.id });
+  const riley = await upsertUser({ name: "Riley Requester", email: "riley.requester@helpdesk.local", password: memberPassword, roleId: userRole.id, departmentId: departments.HR.id });
 
   const existingTickets = await prisma.ticket.count();
   if (existingTickets === 0) {
     console.log("Creating sample tickets...");
+    const itIssue = await prisma.issue.findFirst({ where: { departmentId: departments.IT.id, name: "Laptop / Desktop Issue" } });
+    const vpnIssue = await prisma.issue.findFirst({ where: { departmentId: departments.IT.id, name: "VPN Issue" } });
+    const printerIssue = await prisma.issue.findFirst({ where: { departmentId: departments.IT.id, name: "System Performance" } });
+
     const sampleTickets = [
-      { title: "Laptop won't power on", description: "My laptop screen stays black even when plugged in.", category: "Laptop", priority: "High", status: "OPEN", requester: endUser1, assignee: agent1 },
-      { title: "Need VPN access from home", description: "Requesting VPN client installation for remote work.", category: "VPN", priority: "Medium", status: "IN_PROGRESS", requester: endUser2, assignee: agent2 },
-      { title: "Printer on 3rd floor jamming", description: "Paper jams on every 5th print job.", category: "Printer", priority: "Low", status: "RESOLVED", requester: endUser1, assignee: agent1 },
-      { title: "Production app throwing 500 errors", description: "Customers cannot check out; urgent.", category: "Bug Report", priority: "Critical", status: "OPEN", requester: endUser2, assignee: agent2 },
-      { title: "New hire account setup", description: "Please provision an account for the new analyst starting Monday.", category: "New Account", priority: "Medium", status: "CLOSED", requester: endUser1, assignee: agent1 },
+      { title: "Laptop won't power on", description: "My laptop screen stays black even when plugged in.", category: "Laptop", priority: "High", status: "OPEN", requester: jamie, assignee: members.IT[0], issue: itIssue },
+      { title: "Need VPN access from home", description: "Requesting VPN client installation for remote work.", category: "VPN", priority: "Medium", status: "IN_PROGRESS", requester: riley, assignee: members.IT[1], issue: vpnIssue },
+      { title: "Printer on 3rd floor jamming", description: "Paper jams on every 5th print job.", category: "Printer", priority: "Low", status: "RESOLVED", requester: jamie, assignee: members.IT[0], issue: printerIssue },
+      { title: "Production app throwing 500 errors", description: "Customers cannot check out; urgent.", category: "Bug Report", priority: "Critical", status: "OPEN", requester: riley, assignee: null, issue: itIssue },
+      { title: "New hire account setup", description: "Please provision an account for the new analyst starting Monday.", category: "New Account", priority: "Medium", status: "CLOSED", requester: jamie, assignee: members.IT[0], issue: itIssue },
     ];
 
     for (const t of sampleTickets) {
@@ -199,8 +215,11 @@ async function main() {
           categoryId: category.id,
           priorityId: priority.id,
           requesterId: t.requester.id,
-          assigneeId: t.assignee.id,
-          teamId: team.id,
+          assigneeId: t.assignee?.id || null,
+          fromDepartmentId: t.requester.departmentId,
+          toDepartmentId: departments.IT.id,
+          managerId: managers.IT.id,
+          issueId: t.issue?.id || null,
           status: t.status,
           dueAt: new Date(Date.now() + 24 * 3600 * 1000),
           resolvedAt: ["RESOLVED", "CLOSED"].includes(t.status) ? new Date() : null,
@@ -217,9 +236,9 @@ async function main() {
 
   console.log("Seed complete.");
   console.log(`  Admin login:   ${adminEmail} / ${adminPassword}`);
-  console.log(`  Agent login:   ${agent1.email} / Agent@12345`);
-  console.log(`  User login:    ${endUser1.email} / User@12345`);
   console.log(`  Manager login: it.manager@helpdesk.local / ${managerPassword}`);
+  console.log(`  User login:    ${jamie.email} / ${memberPassword}`);
+  console.log(`  Dept. member:  alex.tech@helpdesk.local / ${memberPassword}`);
 }
 
 main()

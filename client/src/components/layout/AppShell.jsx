@@ -263,37 +263,42 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
             </Button>
           )}
 
-          {/* Theme */}
-          <IconButton
-            onClick={toggleMode}
-            color="inherit"
-          >
-            {mode === "dark" ? (
-              <Brightness7Icon />
-            ) : (
-              <Brightness4Icon />
-            )}
-          </IconButton>
-
-          {/* Notifications */}
-          <NotificationBell />
-
-          {/* User */}
-          <IconButton
-            onClick={(e) =>
-              setUserMenuAnchor(e.currentTarget)
-            }
-          >
-            <Avatar
-              sx={{
-                width: 32,
-                height: 32,
-                bgcolor: "primary.main",
-              }}
+          {/* Right-aligned icon cluster — always pinned to the far right,
+              regardless of whether a search box / Create Ticket button
+              precedes it (Agent layout has neither). */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: "auto" }}>
+            {/* Theme */}
+            <IconButton
+              onClick={toggleMode}
+              color="inherit"
             >
-              {user?.name?.[0]?.toUpperCase() || "U"}
-            </Avatar>
-          </IconButton>
+              {mode === "dark" ? (
+                <Brightness7Icon />
+              ) : (
+                <Brightness4Icon />
+              )}
+            </IconButton>
+
+            {/* Notifications */}
+            <NotificationBell />
+
+            {/* User */}
+            <IconButton
+              onClick={(e) =>
+                setUserMenuAnchor(e.currentTarget)
+              }
+            >
+              <Avatar
+                sx={{
+                  width: 32,
+                  height: 32,
+                  bgcolor: "primary.main",
+                }}
+              >
+                {user?.name?.[0]?.toUpperCase() || "U"}
+              </Avatar>
+            </IconButton>
+          </Box>
 
           {/* User Menu */}
           <Menu

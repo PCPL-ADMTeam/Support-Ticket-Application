@@ -28,10 +28,15 @@ async function bulkUpdate(req, res) {
   res.json({ success: true, data: await ticketService.bulkUpdate(req.user, req.body) });
 }
 
+async function remove(req, res) {
+  await ticketService.deleteTicket(req.user, req.params.id);
+  res.status(204).send();
+}
+
 async function uploadAttachment(req, res) {
   if (!req.file) throw new ApiError(400, "No file uploaded");
   const attachment = await ticketService.addAttachment(req.user, req.params.id, req.file, req.body.commentId || null);
   res.status(201).json({ success: true, data: attachment });
 }
 
-module.exports = { list, getById, create, update, addComment, bulkUpdate, uploadAttachment };
+module.exports = { list, getById, create, update, addComment, bulkUpdate, uploadAttachment, remove };

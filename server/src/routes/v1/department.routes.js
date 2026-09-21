@@ -5,6 +5,7 @@ const requireRole = require("../../middleware/rbac");
 const validate = require("../../middleware/validate");
 const {
   departmentValidator,
+  assignManagerValidator,
   issueValidator,
   updateIssueValidator,
 } = require("../../validators/department.validator");
@@ -15,6 +16,7 @@ departmentRouter.get("/", departments.list); // readable by everyone (ticket for
 departmentRouter.use(requireRole("ADMIN"));
 departmentRouter.post("/", departmentValidator, validate, departments.create);
 departmentRouter.patch("/:id", departmentValidator, validate, departments.update);
+departmentRouter.patch("/:id/manager", assignManagerValidator, validate, departments.assignManager);
 departmentRouter.delete("/:id", departments.remove);
 
 const issueRouter = Router();

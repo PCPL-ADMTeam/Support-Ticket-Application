@@ -15,10 +15,10 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 // Kept as a table (rather than a hardcoded enum) so an Admin could in principle
-// manage roles later; seed.js guarantees ADMIN / AGENT / USER always exist.
+// manage roles later; seed.js guarantees ADMIN / MANAGER / USER always exist.
 model Role {
   id        String   @id @default(cuid())
-  name      String   @unique // ADMIN | AGENT | USER
+  name      String   @unique // ADMIN | MANAGER | USER
   label     String
   createdAt DateTime @default(now())
 
@@ -39,10 +39,14 @@ model User {
   updatedAt    DateTime  @updatedAt
 
   departmentId String?
-  isManager    Boolean   @default(false)
 
   role       Role        @relation(fields: [roleId], references: [id])
-  department Department? @relation(fields: [departmentId], references: [id])
+  department Department? @relation("DepartmentMember", fields: [departmentId], references: [id])
+
+  // The single department this user manages, if role === MANAGER — the
+  // inverse side of Department.managerId. A user can manage at most one
+  // department (enforced by @unique on Department.managerId).
+  managedDepartment Department? @relation("DepartmentManager")
 
   teamMemberships   TeamMember[]
   requestedTickets  Ticket[]          @relation("TicketRequester")
@@ -115,7 +119,13 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users   User[]
+  // Exactly one Manager per department (nullable only until an Admin
+  // assigns one). Assigning a manager here is what grants that User the
+  // MANAGER role — see department.service.js#assignManager.
+  managerId String? @unique
+  manager   User?   @relation("DepartmentManager", fields: [managerId], references: [id])
+
+  users   User[]    @relation("DepartmentMember")
   issues  Issue[]
 
   ticketsFrom Ticket[] @relation("TicketFromDepartment")

@@ -12,7 +12,6 @@ const userListSelect = {
   avatarUrl: true,
   createdAt: true,
   departmentId: true,
-  isManager: true,
   role: { select: { id: true, name: true, label: true } },
   department: { select: { id: true, name: true } },
   teamMemberships: { select: { team: { select: { id: true, name: true } } } },
@@ -48,7 +47,7 @@ async function getUserById(id) {
 }
 
 async function createUser(actorId, payload) {
-  const { name, email, password, roleName, teamIds = [], departmentId, isManager } = payload;
+  const { name, email, password, roleName, teamIds = [], departmentId } = payload;
 
   const role = await prisma.role.findUnique({ where: { name: roleName } });
   if (!role) throw new ApiError(400, `Unknown role: ${roleName}`);
@@ -65,7 +64,6 @@ async function createUser(actorId, payload) {
       passwordHash,
       roleId: role.id,
       departmentId: departmentId || null,
-      isManager: Boolean(isManager),
       teamMemberships: teamIds.length
         ? { create: teamIds.map((teamId) => ({ team: { connect: { id: teamId } } })) }
         : undefined,
@@ -85,7 +83,6 @@ async function updateUser(actorId, id, payload) {
   if (payload.name !== undefined) data.name = payload.name;
   if (payload.isActive !== undefined) data.isActive = payload.isActive;
   if (payload.departmentId !== undefined) data.departmentId = payload.departmentId || null;
-  if (payload.isManager !== undefined) data.isManager = payload.isManager;
   if (payload.roleName !== undefined) {
     const role = await prisma.role.findUnique({ where: { name: payload.roleName } });
     if (!role) throw new ApiError(400, `Unknown role: ${payload.roleName}`);
@@ -100,6 +97,13 @@ async function updateUser(actorId, id, payload) {
         skipDuplicates: true,
       });
     }
+  }
+
+  // Moving a Manager off the MANAGER role (or out of their department) can't
+  // leave them as the department's Department.managerId pointer — clear it
+  // so "Admin manages department users" can't silently orphan a department.
+  if (payload.roleName !== undefined && payload.roleName !== "MANAGER") {
+    await prisma.department.updateMany({ where: { managerId: id }, data: { managerId: null } });
   }
 
   const user = await prisma.user.update({ where: { id }, data, select: userListSelect });
@@ -133,10 +137,16 @@ async function updateOwnProfile(userId, payload) {
   return prisma.user.update({ where: { id: userId }, data, select: userListSelect });
 }
 
-// Lightweight list for populating "assignee" dropdowns (agents/admins only).
-async function listAssignableAgents() {
+// Lightweight list for populating "assignee" dropdowns. Only Users are ever
+// assignable — a Manager only ever sees the Users in their own department,
+// while an Admin can assign from anywhere.
+async function listAssignableUsers(actingUser) {
+  const where = { isActive: true, role: { name: "USER" } };
+  if (actingUser.role.name === "MANAGER") {
+    where.departmentId = actingUser.departmentId || "__none__";
+  }
   return prisma.user.findMany({
-    where: { isActive: true, role: { name: { in: ["AGENT", "ADMIN"] } } },
+    where,
     select: { id: true, name: true, email: true },
     orderBy: { name: "asc" },
   });
@@ -149,5 +159,5 @@ module.exports = {
   updateUser,
   deactivateUser,
   updateOwnProfile,
-  listAssignableAgents,
+  listAssignableUsers,
 };
