@@ -59,6 +59,13 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               fullWidth
+              // Edge/Chromium inject their own native password-reveal eye
+              // icon (`::-ms-reveal`) directly into type="password" inputs,
+              // which renders alongside our own custom toggle below —
+              // producing two eye icons. This only hides that native icon;
+              // it doesn't touch autofill, password-manager suggestions, or
+              // any other browser password functionality.
+              sx={{ "& input::-ms-reveal, & input::-ms-clear": { display: "none" } }}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">

@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const prisma = require("../config/prisma");
 const ApiError = require("../utils/ApiError");
 const { parsePagination, buildPagedResult } = require("../utils/pagination");
@@ -6,6 +8,34 @@ const { recordAudit } = require("../utils/audit");
 const notificationService = require("./notification.service");
 const { sanitizeRichText } = require("../utils/sanitize");
 const { findActiveDepartmentManager } = require("../utils/departmentManager");
+const blobStorageService = require("./blobStorage.service");
+const { uploadRoot } = require("../config/multer");
+
+// A ticket may have at most this many attachments in total, enforced
+// server-side (see createTicket and addAttachment below) so it can never
+// be bypassed via a direct API call regardless of what the frontend does.
+const MAX_ATTACHMENTS_PER_TICKET = 5;
+
+// Early guard, checked BEFORE any Azure upload starts so an obviously
+// over-limit request never wastes a network call. This is NOT the sole
+// source of truth — addAttachment re-checks the count again immediately
+// before the actual insert (inside the same transaction as the create) to
+// narrow the window a concurrent upload for the same ticket could exploit
+// between this call and that one. Full atomicity isn't practical here
+// without a new row-locking primitive this codebase doesn't otherwise use
+// anywhere (Azure's network round-trip has to happen between any
+// "check" and the eventual insert, so it can never be a single atomic DB
+// operation), so this is a best-effort narrowing, not a hard guarantee.
+async function assertAttachmentLimit(ticketId, incomingCount) {
+  const currentCount = await prisma.ticketAttachment.count({ where: { ticketId } });
+  const remainingSlots = Math.max(MAX_ATTACHMENTS_PER_TICKET - currentCount, 0);
+  if (incomingCount > remainingSlots) {
+    throw new ApiError(
+      400,
+      `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket. This ticket already has ${currentCount} attachment(s) and only ${remainingSlots} more can be uploaded.`
+    );
+  }
+}
 
 const ticketListInclude = {
   category: { select: { id: true, name: true } },
@@ -98,6 +128,24 @@ async function assertValidManager(managerId, departmentId) {
   }
 }
 
+// Who may transfer a ticket to a different department — a deliberately
+// separate check from updateTicket's isManagerOrAdmin: an ADMIN (who
+// otherwise manages every ticket) is explicitly EXCLUDED from this specific
+// action per the department-transfer business rule, and a USER may transfer
+// only while they are the ticket's current assignee — not merely its
+// requester, and not any USER in the department.
+function assertCanTransferDepartment(user, ticket) {
+  if (user.role.name === "ADMIN") {
+    throw new ApiError(403, "Administrators cannot transfer a ticket's department.");
+  }
+  if (user.role.name === "AGENT") {
+    if (user.departmentId && ticket.toDepartmentId === user.departmentId) return;
+    throw new ApiError(403, "You can only transfer tickets belonging to your own department.");
+  }
+  if (ticket.assigneeId === user.id) return;
+  throw new ApiError(403, "Only the department manager or the employee currently assigned to this ticket can transfer it.");
+}
+
 async function recordHistory(tx, { ticketId, userId, action, fieldName, oldValue, newValue }) {
   await tx.ticketHistory.create({
     data: { ticketId, userId, action, fieldName, oldValue: oldValue != null ? String(oldValue) : null, newValue: newValue != null ? String(newValue) : null },
@@ -186,6 +234,15 @@ async function getTicketById(user, id) {
 }
 
 async function createTicket(user, payload, files = []) {
+  // Checked first, before any other validation or async work — a brand
+  // new ticket has zero existing attachments, so this is simply "the whole
+  // bundled batch must fit," and it must reject the entire request before
+  // a single file is uploaded to Azure (never a partial upload of some of
+  // the 6+ files submitted).
+  if (files.length > MAX_ATTACHMENTS_PER_TICKET) {
+    throw new ApiError(400, `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket.`);
+  }
+
   const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, issueId, customIssueText } = payload;
 
   const fromDepartmentId = user.departmentId;
@@ -253,19 +310,6 @@ async function createTicket(user, payload, files = []) {
       },
     });
 
-    for (const file of files) {
-      await tx.ticketAttachment.create({
-        data: {
-          ticketId: created.id,
-          uploadedById: user.id,
-          fileName: file.originalname,
-          filePath: file.filename,
-          fileSize: file.size,
-          mimeType: file.mimetype,
-        },
-      });
-    }
-
     await recordHistory(tx, { ticketId: created.id, userId: user.id, action: "CREATED" });
 
     // Ticket numbers are stable identifiers set only at creation — never
@@ -273,38 +317,59 @@ async function createTicket(user, payload, files = []) {
     return tx.ticket.findUnique({ where: { id: created.id }, include: ticketDetailInclude });
   });
 
+  // Attachments are uploaded to Azure (and their metadata saved) AFTER the
+  // transaction above commits — the blob naming convention
+  // (attachments/<ticketId>/...) needs the ticket's real id, which doesn't
+  // exist until the ticket row does, and network calls have no place
+  // inside a DB transaction anyway. Each file is independent and
+  // best-effort: a single failed upload is logged but does not undo the
+  // ticket that was already successfully created, the same "a secondary
+  // side-effect failing must not roll back the primary action" philosophy
+  // already used for notification failures elsewhere in this file.
+  for (const file of files) {
+    await addAttachment(user, ticket.id, file).catch((err) => {
+      console.error(`[tickets] Failed to save attachment "${file.originalname}" for new ticket ${ticket.id}:`, err.message);
+    });
+  }
+  const finalTicket = files.length > 0 ? await prisma.ticket.findUnique({ where: { id: ticket.id }, include: ticketDetailInclude }) : ticket;
+
+  // The requester's own TICKET_CREATED copy must never CC the department
+  // manager — the manager already gets their own separate TICKET_CREATED
+  // notification just below. Every other event keeps the centralized
+  // manager-CC behavior (notification.service.js#notify's default).
   await notificationService.notify({
     eventKey: "TICKET_CREATED",
     userId: user.id,
-    ticketId: ticket.id,
+    ticketId: finalTicket.id,
     type: "TICKET_CREATED",
-    ticket,
+    ticket: finalTicket,
+    skipManagerCc: true,
   });
 
   if (manager) {
     await notificationService.notify({
       eventKey: "TICKET_CREATED",
       userId: manager.id,
-      ticketId: ticket.id,
+      ticketId: finalTicket.id,
       type: "TICKET_CREATED",
-      ticket,
+      ticket: finalTicket,
     });
   }
 
-  if (ticket.assigneeId) {
-    const assignee = await prisma.user.findUnique({ where: { id: ticket.assigneeId } });
+  if (finalTicket.assigneeId) {
+    const assignee = await prisma.user.findUnique({ where: { id: finalTicket.assigneeId } });
     if (assignee) {
       await notificationService.notify({
         eventKey: "TICKET_ASSIGNED",
         userId: assignee.id,
-        ticketId: ticket.id,
+        ticketId: finalTicket.id,
         type: "TICKET_ASSIGNED",
-        ticket,
+        ticket: finalTicket,
       });
     }
   }
 
-  return ticket;
+  return finalTicket;
 }
 
 const VALID_TRANSITIONS = {
@@ -415,7 +480,25 @@ async function updateTicket(user, id, payload) {
   }
 
   if (isManagerOrAdmin) {
-    if (payload.assigneeId !== undefined && payload.assigneeId !== ticket.assigneeId) {
+    // "Assign to Me" — a separate, narrow path from the generic assigneeId
+    // field just below. It is the ONLY way a ticket's assigneeId can ever
+    // become the ACTING caller's own id: never derived from a client-
+    // supplied assigneeId (which stays restricted to active USER
+    // employees via assertValidAssignee, unchanged in the branch below), so
+    // an Agent can never use the raw assigneeId field to self-assign or to
+    // assign to some OTHER Agent — only this explicit, self-only flag, and
+    // only for an AGENT (ADMIN isn't a department worker and has no
+    // "assign to me" UI action). assertCanView already guarantees an AGENT
+    // caller here is this ticket's own department manager.
+    if (payload.assignToMe === true) {
+      if (user.role.name !== "AGENT") {
+        throw new ApiError(403, "Only a department manager can assign a ticket to themselves.");
+      }
+      if (ticket.assigneeId !== user.id) {
+        data.assigneeId = user.id;
+        historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assigneeId, newValue: user.id });
+      }
+    } else if (payload.assigneeId !== undefined && payload.assigneeId !== ticket.assigneeId) {
       const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
       await assertValidAssignee(payload.assigneeId, targetDepartmentId);
       data.assigneeId = payload.assigneeId || null;
@@ -606,6 +689,107 @@ async function notifyOnUpdate(before, after, historyEntries, actor) {
   }
 }
 
+// Moves a ticket to a different department — a separate action from
+// updateTicket's generic toDepartmentId field (which is ADMIN/AGENT-only
+// and does NOT touch manager/assignee). This is the only path that: (a)
+// lets an assigned USER move their own ticket, and (b) automatically
+// re-derives the manager and clears the assignee, since the old assignee
+// belongs to the old department and the new department's manager must
+// review and re-assign it themselves.
+async function transferDepartment(user, ticketId, { toDepartmentId, transferReason }) {
+  const ticket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    include: { toDepartment: { select: { id: true, name: true } } },
+  });
+  if (!ticket) throw new ApiError(404, "Ticket not found");
+  assertCanView(user, ticket);
+  assertCanTransferDepartment(user, ticket);
+
+  const reason = (transferReason || "").trim();
+  if (!reason) throw new ApiError(400, "Transfer reason is required.");
+
+  if (!toDepartmentId) throw new ApiError(400, "Destination department is required.");
+  if (toDepartmentId === ticket.toDepartmentId) {
+    throw new ApiError(400, "This ticket is already routed to that department.");
+  }
+
+  // Department has no separate `isActive` flag in this schema — every
+  // department row that exists is, by definition, usable (a department can
+  // only ever be hard-deleted, and only once nothing references it — see
+  // department.service.js#deleteDepartment). "Active" is therefore
+  // satisfied by simple existence, exactly like createTicket's own
+  // toDepartment lookup.
+  const destinationDepartment = await prisma.department.findUnique({ where: { id: toDepartmentId } });
+  if (!destinationDepartment) throw new ApiError(400, "Invalid destination department.");
+
+  // The manager is never client-chosen — always whichever active AGENT is
+  // flagged as the destination department's manager, exactly like
+  // createTicket's own manager lookup. A department with nobody currently
+  // holding that role cannot receive a transferred ticket at all.
+  const newManager = await findActiveDepartmentManager(toDepartmentId);
+  if (!newManager) {
+    throw new ApiError(400, "The selected department does not have an active manager and cannot receive transferred tickets.");
+  }
+
+  const oldDepartmentName = ticket.toDepartment?.name || "Unassigned";
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.ticket.update({
+      where: { id: ticketId },
+      data: {
+        toDepartmentId,
+        managerId: newManager.id,
+        // The old assignee belongs to the OLD department and must never
+        // remain assigned once the ticket routes elsewhere — the new
+        // department's manager reviews the ticket and assigns it themselves.
+        assigneeId: null,
+      },
+      include: ticketDetailInclude,
+    });
+
+    await recordHistory(tx, {
+      ticketId,
+      userId: user.id,
+      action: "DEPARTMENT_TRANSFERRED",
+      fieldName: "toDepartmentId",
+      oldValue: oldDepartmentName,
+      newValue: destinationDepartment.name,
+    });
+    // Kept as its own permanent row — same pattern as RESOLUTION_NOTES/
+    // ON_HOLD_REASON/CLOSED_REASON — so the reason text is never lost even
+    // though only the before/after department lives on the
+    // DEPARTMENT_TRANSFERRED entry itself.
+    await recordHistory(tx, {
+      ticketId,
+      userId: user.id,
+      action: "TRANSFER_REASON",
+      fieldName: "transferReason",
+      newValue: reason,
+    });
+
+    return result;
+  });
+
+  // Dedicated event — never reuses TICKET_UPDATED. TO the destination
+  // manager (a real Notification + email, same as every other "primary
+  // recipient" call elsewhere in this file); CC the requester as an FYI
+  // only. `ccUserId` replaces notify()'s default "CC the current department
+  // manager" behavior entirely for this one call, so the OLD department's
+  // manager is never CC'd, and nobody is emailed merely for having
+  // performed the transfer (see notification.service.js).
+  await notificationService.notify({
+    eventKey: "TICKET_DEPARTMENT_TRANSFERRED",
+    userId: newManager.id,
+    ticketId: updated.id,
+    type: "TICKET_DEPARTMENT_TRANSFERRED",
+    ticket: updated,
+    ccUserId: updated.requesterId,
+    departmentTransfer: { oldDepartmentName, reason },
+  });
+
+  return scrubInternalComments(updated, user);
+}
+
 async function addComment(user, ticketId, { body, isInternal }) {
   // Includes the same relations as ticketListInclude so the comment-
   // notification email template has department/priority/issue to show,
@@ -678,22 +862,127 @@ async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, tea
   return { updated: ticketIds.length };
 }
 
+// Uploads the file's bytes to Azure Blob Storage first, then saves its
+// metadata to Postgres. If the DB write fails after a successful Azure
+// upload, the blob is deleted so a failed request never leaves an orphan
+// blob behind (there is nothing in Postgres pointing at it to clean up
+// later otherwise).
 async function addAttachment(user, ticketId, file, commentId = null) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   assertCanView(user, ticket);
 
-  return prisma.ticketAttachment.create({
-    data: {
-      ticketId,
-      commentId,
-      uploadedById: user.id,
-      fileName: file.originalname,
-      filePath: file.filename,
-      fileSize: file.size,
-      mimeType: file.mimetype,
-    },
+  // Early guard — never spend an Azure upload on a request that's already
+  // obviously over the limit.
+  await assertAttachmentLimit(ticketId, 1);
+
+  const blobName = await blobStorageService.uploadBuffer({
+    ticketId,
+    buffer: file.buffer,
+    originalName: file.originalname,
+    mimeType: file.mimetype,
   });
+
+  try {
+    // Re-checked immediately before the insert (inside the same
+    // transaction as the create) to narrow the window a concurrent upload
+    // for this same ticket could otherwise exploit between the guard above
+    // and this point. If it fails here, this falls into the same catch
+    // block as a genuine DB error below, so the just-uploaded blob is
+    // cleaned up exactly the same way either way — a race that trips this
+    // check never leaves an orphan blob behind.
+    return await prisma.$transaction(async (tx) => {
+      const currentCount = await tx.ticketAttachment.count({ where: { ticketId } });
+      if (currentCount >= MAX_ATTACHMENTS_PER_TICKET) {
+        throw new ApiError(
+          400,
+          `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket. This ticket already has ${currentCount} attachment(s) and only 0 more can be uploaded.`
+        );
+      }
+      return tx.ticketAttachment.create({
+        data: {
+          ticketId,
+          commentId,
+          uploadedById: user.id,
+          fileName: file.originalname,
+          filePath: blobName,
+          storageProvider: "azure",
+          fileSize: file.size,
+          mimeType: file.mimetype,
+        },
+      });
+    });
+  } catch (err) {
+    await blobStorageService.deleteBlob(blobName).catch((cleanupErr) => {
+      console.error(`[tickets] Failed to clean up orphaned blob ${blobName} after a failed DB write:`, cleanupErr.message);
+    });
+    throw err;
+  }
+}
+
+// Streams an attachment's bytes to the HTTP response after verifying the
+// requester can actually see this ticket — the same assertCanView() every
+// other ticket read/write in this file already goes through. This is what
+// replaces the old public `express.static("/uploads")` mount (see app.js):
+// that served any file by its random filename to anyone with the URL, with
+// no authorization check at all. Azure-stored attachments (storageProvider
+// "azure") stream from Blob Storage; attachments uploaded before this
+// migration (storageProvider "local") still stream from server/uploads/ —
+// nothing about those was migrated or deleted.
+async function streamAttachment(user, ticketId, attachmentId, res) {
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
+  if (!ticket) throw new ApiError(404, "Ticket not found");
+  assertCanView(user, ticket);
+
+  const attachment = await prisma.ticketAttachment.findUnique({ where: { id: attachmentId } });
+  if (!attachment || attachment.ticketId !== ticketId) throw new ApiError(404, "Attachment not found");
+
+  res.setHeader("Content-Type", attachment.mimeType || "application/octet-stream");
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(attachment.fileName)}"`);
+
+  if (attachment.storageProvider === "azure") {
+    const downloadResponse = await blobStorageService.downloadBlobStream(attachment.filePath);
+    downloadResponse.readableStreamBody.pipe(res);
+  } else {
+    const localPath = path.join(uploadRoot, attachment.filePath);
+    fs.createReadStream(localPath).on("error", () => {
+      if (!res.headersSent) res.status(404);
+      res.end();
+    }).pipe(res);
+  }
+}
+
+// Only the person who uploaded an attachment, or staff managing this
+// ticket (same isManagerOrAdmin used throughout updateTicket), may remove
+// it — mirrors the existing uploader-or-handler pattern addComment already
+// uses for internal notes. Azure deletion happens BEFORE the Postgres row
+// is removed, and its failure is never swallowed: if the blob can't be
+// deleted, the DB record is deliberately left in place (a dangling
+// reference to a blob nobody can find is far worse than a metadata row for
+// a blob that still safely exists) and the error propagates to the caller.
+async function deleteAttachment(user, ticketId, attachmentId) {
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
+  if (!ticket) throw new ApiError(404, "Ticket not found");
+  assertCanView(user, ticket);
+
+  const attachment = await prisma.ticketAttachment.findUnique({ where: { id: attachmentId } });
+  if (!attachment || attachment.ticketId !== ticketId) throw new ApiError(404, "Attachment not found");
+
+  const isManagerOrAdmin = user.role.name === "ADMIN" || user.role.name === "AGENT";
+  if (attachment.uploadedById !== user.id && !isManagerOrAdmin) {
+    throw new ApiError(403, "You can only delete attachments you uploaded");
+  }
+
+  if (attachment.storageProvider === "azure") {
+    await blobStorageService.deleteBlob(attachment.filePath);
+  } else {
+    const localPath = path.join(uploadRoot, attachment.filePath);
+    await fs.promises.unlink(localPath).catch((err) => {
+      if (err.code !== "ENOENT") console.error(`[tickets] Failed to remove local attachment file ${localPath}:`, err.message);
+    });
+  }
+
+  await prisma.ticketAttachment.delete({ where: { id: attachmentId } });
 }
 
 module.exports = {
@@ -701,8 +990,11 @@ module.exports = {
   getTicketById,
   createTicket,
   updateTicket,
+  transferDepartment,
   addComment,
   addAttachment,
+  streamAttachment,
+  deleteAttachment,
   bulkUpdate,
   scopeWhereForUser,
 };

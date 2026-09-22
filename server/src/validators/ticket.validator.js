@@ -18,6 +18,11 @@ const updateTicketValidator = [
   param("id").notEmpty(),
   body("status").optional().isIn(["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"]),
   body("assigneeId").optional({ nullable: true }).isString(),
+  // "Assign to Me" — see ticket.service.js#updateTicket; when true, the
+  // server derives the assignee from the authenticated caller and ignores
+  // whatever assigneeId (if any) was also sent, so this is type-checked
+  // only, never trusted as "who" to assign to.
+  body("assignToMe").optional().isBoolean(),
   body("teamId").optional({ nullable: true }).isString(),
   body("priorityId").optional().isString(),
   body("categoryId").optional().isString(),
@@ -37,6 +42,12 @@ const updateTicketValidator = [
   body("resolutionNotes").optional().isString(),
   body("onHoldReason").optional().isString(),
   body("closedReason").optional().isString(),
+];
+
+const transferDepartmentValidator = [
+  param("id").notEmpty(),
+  body("toDepartmentId").notEmpty().withMessage("Destination department is required"),
+  body("transferReason").trim().notEmpty().withMessage("Transfer reason is required"),
 ];
 
 const commentValidator = [
@@ -64,6 +75,7 @@ const listTicketsValidator = [
 module.exports = {
   createTicketValidator,
   updateTicketValidator,
+  transferDepartmentValidator,
   commentValidator,
   bulkUpdateValidator,
   listTicketsValidator,

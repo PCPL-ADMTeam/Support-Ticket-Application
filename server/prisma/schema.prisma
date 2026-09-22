@@ -314,10 +314,18 @@ model TicketAttachment {
   commentId    String?
   uploadedById String
   fileName     String
-  filePath     String
-  fileSize     Int
-  mimeType     String
-  createdAt    DateTime @default(now())
+  // "local" (legacy, pre-Azure-migration): filePath is the random filename
+  // multer wrote under server/uploads/. "azure" (current): filePath is the
+  // full blob name (attachments/<ticketId>/<unique-id>-<name>) inside the
+  // AZURE_STORAGE_CONTAINER_NAME container — never a full URL, and never
+  // the storage connection string/key. See blobStorage.service.js and
+  // ticket.service.js#streamAttachment, which branch on this field to know
+  // where to actually read the bytes from.
+  filePath        String
+  storageProvider String @default("local")
+  fileSize        Int
+  mimeType        String
+  createdAt       DateTime @default(now())
 
   ticket     Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   comment    TicketComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)

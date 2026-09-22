@@ -41,7 +41,20 @@ function stripHtmlForBell(html) {
   return String(html).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-async function notify({ eventKey, userId, ticketId, type, ticket, comment, statusChange }) {
+// `skipManagerCc` exists solely for TICKET_CREATED's requester email (see
+// ticket.service.js#createTicket): the department manager already gets
+// their OWN separate TICKET_CREATED notify() call, so CC'ing them again on
+// the requester's copy would be a duplicate, not a heads-up. Every other
+// call site leaves this at its default (false), preserving the existing
+// centralized manager-CC behavior for every other event unchanged.
+//
+// `ccUserId` is a different kind of override: an explicit, event-specific
+// CC recipient that REPLACES the default "CC the ticket's current
+// department manager" behavior entirely, rather than merely skipping it —
+// used by TICKET_DEPARTMENT_TRANSFERRED, whose own recipient rule (TO the
+// destination manager, CC the requester) has nothing to do with
+// resolveDepartmentManagerCc's usual "current department" logic.
+async function notify({ eventKey, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, skipManagerCc = false, ccUserId = null }) {
   let recipientName;
   try {
     const recipient = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
@@ -50,7 +63,7 @@ async function notify({ eventKey, userId, ticketId, type, ticket, comment, statu
     console.error(`[notifications] Failed to load recipient ${userId}:`, err.message);
   }
 
-  const rendered = await emailTemplateService.renderTemplate(eventKey, { ticket, comment, recipientName, statusChange });
+  const rendered = await emailTemplateService.renderTemplate(eventKey, { ticket, comment, recipientName, statusChange, departmentTransfer });
   const { subject, body } = rendered || fallbackContent(eventKey, ticket);
 
   try {
@@ -74,11 +87,27 @@ async function notify({ eventKey, userId, ticketId, type, ticket, comment, statu
     // the exact same lookup createTicket already uses to derive a manager
     // in the first place. Never added if it would duplicate the primary
     // recipient, and never fails the email if no manager exists.
-    const cc = await resolveDepartmentManagerCc(ticket, email);
+    let cc;
+    if (ccUserId) {
+      cc = await resolveExplicitCc(ccUserId, email);
+    } else if (!skipManagerCc) {
+      cc = await resolveDepartmentManagerCc(ticket, email);
+    }
 
     await emailService.sendMail({ to: email, cc, subject, html: body });
   } catch (err) {
     console.error(`[notifications] Failed to email user ${userId}:`, err.message);
+  }
+}
+
+async function resolveExplicitCc(ccUserId, primaryEmail) {
+  try {
+    const ccEmail = await emailService.resolveUserEmail(ccUserId);
+    if (!ccEmail || ccEmail.toLowerCase() === primaryEmail.toLowerCase()) return undefined;
+    return ccEmail;
+  } catch (err) {
+    console.error(`[notifications] Failed to resolve explicit CC user ${ccUserId}:`, err.message);
+    return undefined;
   }
 }
 

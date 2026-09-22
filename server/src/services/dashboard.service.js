@@ -32,20 +32,47 @@ function scopeSqlForTab(user, scope) {
 }
 
 async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
-  const where = { AND: [scopeWhereForTab(user, scope), dateFrom || dateTo ? {
+  const dateWhere = dateFrom || dateTo ? {
     createdAt: {
       ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
       ...(dateTo ? { lte: new Date(dateTo) } : {}),
     },
-  } : {}] };
+  } : {};
+
+  const where = { AND: [scopeWhereForTab(user, scope), dateWhere] };
 
   const scopeSql = scopeSqlForTab(user, scope);
+
+  // "Raised by Me" and "Total Department Tickets" are fixed-definition
+  // KPIs, independent of whatever `scope` the caller passed for the
+  // status/priority breakdown above — so a request for e.g. `?scope=
+  // assigned` can never silently redefine or blank out either number. Both
+  // are derived only from the authenticated `user` (never a client-
+  // supplied id), and both use the SAME date range as every other KPI here.
+  //
+  // raisedByMe: every ticket this user raised, regardless of which
+  // department currently owns it (so a ticket transferred elsewhere after
+  // being raised still counts here) — plain requesterId match, same
+  // definition scopeWhereForTab's own "created" branch already uses.
+  const raisedByMeWhere = { AND: [{ requesterId: user.id }, dateWhere] };
+  // totalDepartmentTickets: reuses ticket.service.js's own
+  // scopeWhereForUser — for an AGENT that's exactly "tickets currently
+  // routed to my department" (toDepartmentId match), the SAME rule
+  // assertCanView/listTickets already enforce for what an Agent may even
+  // see, so this can never become a second, conflicting notion of
+  // "department ticket." For ADMIN/USER this mirrors their own normal
+  // visibility (system-wide / own tickets) — an unused-but-harmless field
+  // for roles whose dashboards don't render it, same precedent as
+  // `unassignedCount` below.
+  const departmentWhere = { AND: [scopeWhereForUser(user), dateWhere] };
 
   const [
     statusGroups,
     priorityGroups,
     totalCount,
     unassignedCount,
+    raisedByMe,
+    totalDepartmentTickets,
   ] = await Promise.all([
     prisma.ticket.groupBy({ by: ["status"], where, _count: { _all: true } }),
     prisma.ticket.groupBy({ by: ["priorityId"], where, _count: { _all: true } }),
@@ -54,6 +81,8 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     // nobody is working yet; harmless extra field for Admin/User, who don't
     // display it.
     prisma.ticket.count({ where: { AND: [...where.AND, { assigneeId: null }] } }),
+    prisma.ticket.count({ where: raisedByMeWhere }),
+    prisma.ticket.count({ where: departmentWhere }),
   ]);
 
   const priorities = await prisma.priority.findMany({ select: { id: true, name: true, color: true } });
@@ -61,6 +90,8 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
   const kpis = {
     total: totalCount,
     unassigned: unassignedCount,
+    raisedByMe,
+    totalDepartmentTickets,
     ...Object.fromEntries(STATUSES.map((s) => [s.toLowerCase(), 0])),
   };
   for (const g of statusGroups) kpis[g.status.toLowerCase()] = g._count._all;

@@ -1,11 +1,10 @@
-import { useState } from "react";
-import { Stack, Typography, Box, Link as MuiLink, IconButton, Dialog } from "@mui/material";
+import { useState, useEffect, useRef } from "react";
+import { Stack, Typography, Box, Link as MuiLink, IconButton, Dialog, CircularProgress } from "@mui/material";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import CloseIcon from "@mui/icons-material/Close";
-
-const API_ORIGIN = (import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api/v1").replace(/\/api\/v1\/?$/, "");
+import { ticketsApi } from "../../api/tickets";
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -17,11 +16,68 @@ function isImage(a) {
   return a.mimeType?.startsWith("image/");
 }
 
-export default function AttachmentList({ attachments }) {
+// Attachments are no longer served from a public static path — the backend
+// streams them only after checking the caller can see this ticket (see
+// ticket.service.js#streamAttachment), which means every request needs the
+// same Bearer auth header as the rest of the app's API calls. A plain
+// <img src="..."> or <a href="..."> can't attach that header, so instead
+// each file is fetched as a Blob through the existing authenticated axios
+// instance (ticketsApi.downloadAttachment) and rendered from an object URL
+// — image thumbnails eagerly (so previews still "just work"), other files
+// on demand when the user clicks to download.
+export default function AttachmentList({ ticketId, attachments }) {
   const [preview, setPreview] = useState(null);
+  const [imageUrls, setImageUrls] = useState({});
+  const [downloadingId, setDownloadingId] = useState(null);
+  const objectUrlsRef = useRef([]);
 
   const images = attachments.filter(isImage);
   const files = attachments.filter((a) => !isImage(a));
+  const imageIds = images.map((a) => a.id).join(",");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all(
+      images.map(async (a) => {
+        try {
+          const { data } = await ticketsApi.downloadAttachment(ticketId, a.id);
+          const url = URL.createObjectURL(data);
+          objectUrlsRef.current.push(url);
+          return [a.id, url];
+        } catch {
+          return null;
+        }
+      })
+    ).then((entries) => {
+      if (cancelled) return;
+      setImageUrls(Object.fromEntries(entries.filter(Boolean)));
+    });
+
+    return () => {
+      cancelled = true;
+      objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      objectUrlsRef.current = [];
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticketId, imageIds]);
+
+  const handleDownload = async (a) => {
+    setDownloadingId(a.id);
+    try {
+      const { data } = await ticketsApi.downloadAttachment(ticketId, a.id);
+      const url = URL.createObjectURL(data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = a.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   return (
     <Box>
@@ -38,38 +94,57 @@ export default function AttachmentList({ attachments }) {
               {images.map((a) => (
                 <Box key={a.id} sx={{ width: 96 }}>
                   <Box sx={{ position: "relative", width: 96, height: 96 }}>
-                    <Box
-                      component="img"
-                      src={`${API_ORIGIN}/uploads/${a.filePath}`}
-                      alt={a.fileName}
-                      onClick={() => setPreview(a)}
-                      sx={{
-                        width: 96,
-                        height: 96,
-                        objectFit: "cover",
-                        borderRadius: 2,
-                        border: 1,
-                        borderColor: "divider",
-                        display: "block",
-                        cursor: "pointer",
-                      }}
-                    />
-                    <IconButton
-                      size="small"
-                      onClick={() => setPreview(a)}
-                      title="Expand"
-                      sx={{
-                        position: "absolute",
-                        top: 4,
-                        right: 4,
-                        p: 0.5,
-                        bgcolor: "rgba(0, 0, 0, 0.55)",
-                        color: "#fff",
-                        "&:hover": { bgcolor: "rgba(0, 0, 0, 0.75)" },
-                      }}
-                    >
-                      <OpenInFullIcon sx={{ fontSize: 14 }} />
-                    </IconButton>
+                    {imageUrls[a.id] ? (
+                      <Box
+                        component="img"
+                        src={imageUrls[a.id]}
+                        alt={a.fileName}
+                        onClick={() => setPreview(a)}
+                        sx={{
+                          width: 96,
+                          height: 96,
+                          objectFit: "cover",
+                          borderRadius: 2,
+                          border: 1,
+                          borderColor: "divider",
+                          display: "block",
+                          cursor: "pointer",
+                        }}
+                      />
+                    ) : (
+                      <Box
+                        sx={{
+                          width: 96,
+                          height: 96,
+                          borderRadius: 2,
+                          border: 1,
+                          borderColor: "divider",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <CircularProgress size={20} />
+                      </Box>
+                    )}
+                    {imageUrls[a.id] && (
+                      <IconButton
+                        size="small"
+                        onClick={() => setPreview(a)}
+                        title="Expand"
+                        sx={{
+                          position: "absolute",
+                          top: 4,
+                          right: 4,
+                          p: 0.5,
+                          bgcolor: "rgba(0, 0, 0, 0.55)",
+                          color: "#fff",
+                          "&:hover": { bgcolor: "rgba(0, 0, 0, 0.75)" },
+                        }}
+                      >
+                        <OpenInFullIcon sx={{ fontSize: 14 }} />
+                      </IconButton>
+                    )}
                   </Box>
                   <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block", mt: 0.5 }}>
                     {a.fileName}
@@ -84,9 +159,17 @@ export default function AttachmentList({ attachments }) {
               {files.map((a) => (
                 <Box key={a.id} sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <InsertDriveFileIcon fontSize="small" color="action" />
-                  <MuiLink href={`${API_ORIGIN}/uploads/${a.filePath}`} target="_blank" rel="noopener noreferrer" underline="hover" sx={{ flex: 1 }}>
+                  <MuiLink
+                    component="button"
+                    type="button"
+                    underline="hover"
+                    onClick={() => handleDownload(a)}
+                    disabled={downloadingId === a.id}
+                    sx={{ flex: 1, textAlign: "left" }}
+                  >
                     {a.fileName}
                   </MuiLink>
+                  {downloadingId === a.id && <CircularProgress size={14} />}
                   <Typography variant="caption" color="text.secondary">{formatSize(a.fileSize)}</Typography>
                 </Box>
               ))}
@@ -137,7 +220,7 @@ export default function AttachmentList({ attachments }) {
             </IconButton>
             <Box
               component="img"
-              src={`${API_ORIGIN}/uploads/${preview.filePath}`}
+              src={imageUrls[preview.id]}
               alt={preview.fileName}
               sx={{
                 display: "block",

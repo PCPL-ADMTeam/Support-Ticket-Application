@@ -11,12 +11,29 @@ import {
   TextField,
   Button,
   Divider,
+  Grid,
+  Chip,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import { format } from "date-fns";
 import { useSnackbar } from "notistack";
 import { useAuth } from "../../context/AuthContext";
 import { authApi } from "../../api/auth";
 import { usersApi } from "../../api/users";
+
+// A single "label / value" row used to lay out the real, existing profile
+// fields returned by GET /auth/me — never fabricated placeholders. A field
+// is simply omitted (not rendered as "N/A") when the backend has nothing
+// for it (e.g. no department, no manager).
+function ProfileField({ label, value }) {
+  if (value === null || value === undefined || value === "") return null;
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary">{label}</Typography>
+      <Typography variant="body2" fontWeight={600}>{value}</Typography>
+    </Box>
+  );
+}
 
 // Rendered from the top-right user menu ("Profile" / "Edit Profile") in
 // place of a dedicated /profile route/page.
@@ -36,6 +53,14 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
   useEffect(() => {
     if (open) setName(user.name);
   }, [open, user.name]);
+
+  // The session's `user` (set at login/refresh) doesn't carry a couple of
+  // profile-only fields (e.g. departmentManager) that GET /auth/me adds —
+  // re-fetch on open so the panel always reflects the full, current record.
+  useEffect(() => {
+    if (open) refreshMe().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const handleProfileSave = async (e) => {
     e.preventDefault();
@@ -72,7 +97,7 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         {editable ? "Edit Profile" : "Profile"}
         <IconButton onClick={onClose} size="small" aria-label="Close">
@@ -81,13 +106,44 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
       </DialogTitle>
 
       <DialogContent dividers>
-        <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: editable ? 3 : 0 }}>
-          <Avatar sx={{ width: 56, height: 56, bgcolor: "primary.main" }}>{user.name[0]}</Avatar>
+        <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3 }}>
+          <Avatar sx={{ width: 64, height: 64, fontSize: 24, bgcolor: "primary.main" }}>{user.name[0]}</Avatar>
           <Box>
             <Typography variant="subtitle1" fontWeight={700}>{user.name}</Typography>
-            <Typography variant="body2" color="text.secondary">{user.email} · {user.role.label}</Typography>
+            <Typography variant="body2" color="text.secondary">{user.email}</Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 0.75, rowGap: 0.5 }}>
+              <Chip size="small" variant="outlined" color="primary" label={user.role.label} />
+              {user.isManager && <Chip size="small" variant="outlined" color="secondary" label="Department Manager" />}
+              <Chip size="small" variant="outlined" color={user.isActive ? "success" : "default"} label={user.isActive ? "Active" : "Inactive"} />
+            </Stack>
           </Box>
         </Stack>
+
+        {/* Two-column (desktop) / stacked (mobile) view of the real fields
+            GET /auth/me already returns — no fabricated placeholders. Kept
+            out of edit mode so the edit form stays focused; a user reopens
+            in view mode to see this after saving. */}
+        {!editable && (
+          <Grid container spacing={3} sx={{ mb: 1 }}>
+            <Grid item xs={12} sm={6}>
+              <Stack spacing={2}>
+                <ProfileField label="Department" value={user.department?.name} />
+                <ProfileField
+                  label="Reporting Manager"
+                  value={user.departmentManager ? `${user.departmentManager.name} (${user.departmentManager.email})` : null}
+                />
+              </Stack>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <Stack spacing={2}>
+                <ProfileField
+                  label="Member Since"
+                  value={user.createdAt ? format(new Date(user.createdAt), "MMM d, yyyy") : null}
+                />
+              </Stack>
+            </Grid>
+          </Grid>
+        )}
 
         {editable && (
           <>

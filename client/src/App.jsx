@@ -29,6 +29,8 @@ import AgentDashboardPage from "./pages/agent/AgentDashboardPage";
 import AgentQueuePage from "./pages/agent/AgentQueuePage";
 
 import PortalDashboardPage from "./pages/portal/PortalDashboardPage";
+// Shared ticket-creation page — reused as-is under both /portal and /agent,
+// never duplicated (see its own file for the role-aware "done" redirect).
 import NewTicketPage from "./pages/portal/NewTicketPage";
 import MyTicketsPage from "./pages/portal/MyTicketsPage";
 
@@ -76,6 +78,7 @@ export default function App() {
                 <Route path="/agent" element={<AgentLayout />}>
                   <Route index element={<AgentDashboardPage />} />
                   <Route path="queue" element={<AgentQueuePage />} />
+                  <Route path="new-ticket" element={<NewTicketPage />} />
                 </Route>
               </Route>
 

@@ -16,6 +16,8 @@ const ACTION_LABELS = {
   RESOLUTION_NOTES: "Resolution notes",
   ON_HOLD_REASON: "On-hold reason",
   CLOSED_REASON: "Closed reason",
+  DEPARTMENT_TRANSFERRED: "Department transferred",
+  TRANSFER_REASON: "Transfer reason",
   COMMENTED: "Commented",
   BULK_UPDATE: "Bulk updated",
 };
@@ -28,6 +30,8 @@ const ACTION_COLORS = {
   RESOLUTION_NOTES: "success",
   ON_HOLD_REASON: "warning",
   CLOSED_REASON: "grey",
+  DEPARTMENT_TRANSFERRED: "info",
+  TRANSFER_REASON: "grey",
 };
 
 export default function ActivityTimeline({ history }) {

@@ -19,6 +19,11 @@ async function update(req, res) {
   res.json({ success: true, data: ticket });
 }
 
+async function transferDepartment(req, res) {
+  const ticket = await ticketService.transferDepartment(req.user, req.params.id, req.body);
+  res.json({ success: true, data: ticket });
+}
+
 async function addComment(req, res) {
   const comment = await ticketService.addComment(req.user, req.params.id, req.body);
   res.status(201).json({ success: true, data: comment });
@@ -34,4 +39,13 @@ async function uploadAttachment(req, res) {
   res.status(201).json({ success: true, data: attachment });
 }
 
-module.exports = { list, getById, create, update, addComment, bulkUpdate, uploadAttachment };
+async function downloadAttachment(req, res) {
+  await ticketService.streamAttachment(req.user, req.params.id, req.params.attachmentId, res);
+}
+
+async function deleteAttachment(req, res) {
+  await ticketService.deleteAttachment(req.user, req.params.id, req.params.attachmentId);
+  res.json({ success: true, message: "Attachment deleted" });
+}
+
+module.exports = { list, getById, create, update, transferDepartment, addComment, bulkUpdate, uploadAttachment, downloadAttachment, deleteAttachment };

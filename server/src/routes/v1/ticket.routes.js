@@ -7,6 +7,7 @@ const { upload } = require("../../config/multer");
 const {
   createTicketValidator,
   updateTicketValidator,
+  transferDepartmentValidator,
   commentValidator,
   bulkUpdateValidator,
   listTicketsValidator,
@@ -16,12 +17,25 @@ const router = Router();
 router.use(authenticate);
 
 router.get("/", listTicketsValidator, validate, ticketController.list);
-router.post("/", upload.array("attachments", 5), createTicketValidator, validate, ticketController.create);
+// maxCount here is a generous outer ceiling (resource-exhaustion guard
+// only) — the real "5 attachments per ticket" business rule is enforced in
+// ticket.service.js#createTicket, which runs after this and produces the
+// specific, user-facing message. It's set well above 5 so a request with
+// e.g. 6-20 files reaches that check (and its message) instead of being
+// cut off here first with Multer's own generic "too many files" error.
+router.post("/", upload.array("attachments", 20), createTicketValidator, validate, ticketController.create);
 router.post("/bulk", requireRole("ADMIN"), bulkUpdateValidator, validate, ticketController.bulkUpdate);
 router.get("/:id", ticketController.getById);
 router.patch("/:id", updateTicketValidator, validate, ticketController.update);
+// Dedicated endpoint (not the generic PATCH above) — department transfer has
+// its own permission matrix (an assigned USER may transfer; an ADMIN may
+// not) and side effects (manager re-derived, assignee cleared) that don't
+// belong in updateTicket's staff-only toDepartmentId field.
+router.patch("/:id/transfer-department", transferDepartmentValidator, validate, ticketController.transferDepartment);
 
 router.post("/:id/comments", commentValidator, validate, ticketController.addComment);
 router.post("/:id/attachments", upload.single("file"), ticketController.uploadAttachment);
+router.get("/:id/attachments/:attachmentId/download", ticketController.downloadAttachment);
+router.delete("/:id/attachments/:attachmentId", ticketController.deleteAttachment);
 
 module.exports = router;

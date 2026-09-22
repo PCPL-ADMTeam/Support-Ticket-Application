@@ -26,16 +26,11 @@ const ALLOWED_MIME_TYPES = new Set([
   "application/zip",
 ]);
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadRoot),
-  filename: (_req, file, cb) => {
-    // Never trust the original filename for the path on disk — generate a
-    // random, collision-free name and keep the original only as metadata.
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname).slice(0, 20);
-    cb(null, `${uniqueSuffix}${ext}`);
-  },
-});
+// Memory storage — uploaded files are held in `file.buffer` and streamed
+// straight to Azure Blob Storage (see ticket.service.js / blobStorage.
+// service.js) instead of ever touching local disk. `uploadRoot` above is
+// kept only so attachments uploaded before this migration (storageProvider
+// "local") can still be read back — new uploads never write there.
 
 function fileFilter(_req, file, cb) {
   if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
@@ -45,7 +40,7 @@ function fileFilter(_req, file, cb) {
 }
 
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   fileFilter,
   limits: { fileSize: env.upload.maxSizeMb * 1024 * 1024 },
 });

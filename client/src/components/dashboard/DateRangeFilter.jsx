@@ -15,7 +15,13 @@ export default function DateRangeFilter({ days, onChange }) {
       onChange={(_e, value) => value && onChange(value)}
     >
       {OPTIONS.map((opt) => (
-        <ToggleButton key={opt.value} value={opt.value}>{opt.label}</ToggleButton>
+        <ToggleButton
+          key={opt.value}
+          value={opt.value}
+          sx={{ minWidth: 112, justifyContent: "center", textAlign: "center" }}
+        >
+          {opt.label}
+        </ToggleButton>
       ))}
     </ToggleButtonGroup>
   );

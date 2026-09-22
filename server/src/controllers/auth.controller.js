@@ -1,5 +1,6 @@
 const authService = require("../services/auth.service");
 const env = require("../config/env");
+const { findActiveDepartmentManager } = require("../utils/departmentManager");
 
 const REFRESH_COOKIE_NAME = "refreshToken";
 const REFRESH_COOKIE_OPTIONS = {
@@ -38,8 +39,21 @@ async function logout(req, res) {
   res.json({ success: true, message: "Logged out" });
 }
 
+// A regular USER doesn't manage anyone, but the Profile view benefits from
+// showing who DOES manage their department — an AGENT is that manager
+// themselves (nothing to look up) and an ADMIN has no department, so the
+// lookup only ever runs for USER accounts. Only name/email are exposed,
+// never the manager's own id-linked internals.
 async function me(req, res) {
-  res.json({ success: true, data: authService.sanitizeUser(req.user) });
+  const safeUser = authService.sanitizeUser(req.user);
+
+  let departmentManager = null;
+  if (req.user.role?.name === "USER" && req.user.departmentId) {
+    const manager = await findActiveDepartmentManager(req.user.departmentId);
+    if (manager) departmentManager = { name: manager.name, email: manager.email };
+  }
+
+  res.json({ success: true, data: { ...safeUser, departmentManager } });
 }
 
 async function changePassword(req, res) {

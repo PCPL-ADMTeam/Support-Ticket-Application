@@ -28,7 +28,7 @@ async function main() {
 
   const [adminRole, agentRole, userRole] = await Promise.all([
     upsertRole("ADMIN", "Administrator"),
-    upsertRole("AGENT", "Agent / Technician"),
+    upsertRole("AGENT", "Agent"),
     upsertRole("USER", "End User"),
   ]);
 

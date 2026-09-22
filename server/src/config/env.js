@@ -54,6 +54,16 @@ module.exports = {
     maxSizeMb: parseInt(process.env.MAX_UPLOAD_SIZE_MB || "10", 10),
   },
 
+  // Azure Blob Storage — where new ticket attachments are stored (see
+  // blobStorage.service.js). Never hardcode these — see
+  // server/.env.example. The connection string embeds the storage account
+  // key; never log it or send it to the frontend.
+  azure: {
+    storageAccountName: process.env.AZURE_STORAGE_ACCOUNT_NAME || "",
+    storageConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING || "",
+    storageContainerName: process.env.AZURE_STORAGE_CONTAINER_NAME || "",
+  },
+
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000", 10),
     max: parseInt(process.env.RATE_LIMIT_MAX || "300", 10),

@@ -23,14 +23,11 @@ import {
 
 import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
-import Brightness4Icon from "@mui/icons-material/Brightness4";
-import Brightness7Icon from "@mui/icons-material/Brightness7";
 import SearchIcon from "@mui/icons-material/Search";
 import AddIcon from "@mui/icons-material/Add";
 
 import { useTheme } from "@mui/material/styles";
 import { useAuth } from "../../context/AuthContext";
-import { useThemeMode } from "../../context/ThemeModeContext";
 import NotificationBell from "./NotificationBell";
 import ProfileDialog from "./ProfileDialog";
 import logo from "../../assets/logo.png";
@@ -55,7 +52,6 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
   const [profileDialog, setProfileDialog] = useState(null); // "view" | "edit" | null
 
   const { user, logout } = useAuth();
-  const { mode, toggleMode } = useThemeMode();
 
   const navigate = useNavigate();
 
@@ -267,18 +263,6 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
                 Create Ticket
               </Button>
             )}
-
-            {/* Theme */}
-            <IconButton
-              onClick={toggleMode}
-              color="inherit"
-            >
-              {mode === "dark" ? (
-                <Brightness7Icon />
-              ) : (
-                <Brightness4Icon />
-              )}
-            </IconButton>
 
             {/* Notifications */}
             <NotificationBell />

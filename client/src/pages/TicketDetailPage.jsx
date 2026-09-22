@@ -15,13 +15,16 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  ListSubheader,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
+import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
 import { format } from "date-fns";
 import { useSnackbar } from "notistack";
 import { ticketsApi } from "../api/tickets";
 import { prioritiesApi } from "../api/catalog";
 import { usersApi } from "../api/users";
+import { departmentsApi } from "../api/departments";
 import { useAuth } from "../context/AuthContext";
 import LoadingState from "../components/common/LoadingState";
 import StatusBadge from "../components/common/StatusBadge";
@@ -80,6 +83,13 @@ const REASON_CONFIG = {
   },
 };
 
+// A distinct sentinel (never a real user id) so the Assign dialog's select
+// can represent "Assign to Me" as its own option, separate from picking a
+// specific Team Member id — translated to the dedicated `assignToMe: true`
+// payload flag on save (see ticket.service.js#updateTicket), never sent as
+// a raw assigneeId.
+const ASSIGN_TO_ME_VALUE = "__assign_to_me__";
+
 export default function TicketDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -103,6 +113,13 @@ export default function TicketDetailPage() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [draftAssigneeId, setDraftAssigneeId] = useState("");
   const [savingAssign, setSavingAssign] = useState(false);
+
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [departments, setDepartments] = useState([]);
+  const [draftToDepartmentId, setDraftToDepartmentId] = useState("");
+  const [draftTransferReason, setDraftTransferReason] = useState("");
+  const [transferReasonError, setTransferReasonError] = useState("");
+  const [savingTransfer, setSavingTransfer] = useState(false);
 
   // Permission flags below are UI-only conveniences that mirror
   // ticket.service.js#updateTicket's actual rules (isManagerOrAdmin,
@@ -129,6 +146,12 @@ export default function TicketDetailPage() {
   // never merely because the current user is the assignee. Mirrors
   // ticket.service.js#updateTicket's canRequesterEditDetails exactly.
   const canEditAsRequester = isOwner && Boolean(ticket) && !["RESOLVED", "CLOSED"].includes(ticket.status);
+  // Department transfer has its own permission matrix, distinct from
+  // canManage — mirrors ticket.service.js#assertCanTransferDepartment
+  // exactly: ADMIN is explicitly excluded even though canManage includes
+  // them, and only the ticket's current ASSIGNEE (never merely the
+  // requester) may transfer as a USER.
+  const canTransferDepartment = (isAgent && Boolean(user.departmentId) && ticket?.toDepartmentId === user.departmentId) || isAssignedToMe;
 
   const load = useCallback(async () => {
     const { data } = await ticketsApi.getById(id);
@@ -225,12 +248,15 @@ export default function TicketDetailPage() {
   };
 
   const openAssignDialog = () => {
-    setDraftAssigneeId(ticket.assignee?.id || "");
+    setDraftAssigneeId(
+      ticket.assignee?.id === user.id ? ASSIGN_TO_ME_VALUE : (ticket.assignee?.id || "")
+    );
     setAssignOpen(true);
   };
 
   const handleSaveAssign = async () => {
-    const newAssigneeId = draftAssigneeId || null;
+    const isAssignToMe = draftAssigneeId === ASSIGN_TO_ME_VALUE;
+    const newAssigneeId = isAssignToMe ? user.id : (draftAssigneeId || null);
     if (newAssigneeId === (ticket.assignee?.id || null)) {
       setAssignOpen(false);
       return;
@@ -238,14 +264,64 @@ export default function TicketDetailPage() {
 
     setSavingAssign(true);
     try {
-      await applyUpdate({ assigneeId: newAssigneeId });
+      // "Assign to Me" is its own explicit flag — the backend derives the
+      // assignee from the authenticated caller for that path and never
+      // trusts a raw assigneeId for self-assignment (see
+      // ticket.service.js#updateTicket).
+      await applyUpdate(isAssignToMe ? { assignToMe: true } : { assigneeId: newAssigneeId });
       setAssignOpen(false);
     } finally {
       setSavingAssign(false);
     }
   };
 
+  const openTransferDialog = () => {
+    setDraftToDepartmentId("");
+    setDraftTransferReason("");
+    setTransferReasonError("");
+    setTransferOpen(true);
+    // Fetched on open (rather than eagerly on page load) since this is a
+    // rarely-used action — GET /departments is readable by everyone and
+    // already includes each department's active `managers`, letting this
+    // list filter out departments that couldn't legally receive a transfer
+    // anyway; the backend independently re-validates regardless.
+    departmentsApi.list().then(({ data }) => setDepartments(data.data));
+  };
+
+  const handleSaveTransfer = async () => {
+    const reason = draftTransferReason.trim();
+    if (!reason) {
+      setTransferReasonError("Transfer reason is required.");
+      return;
+    }
+    if (!draftToDepartmentId) return;
+
+    setSavingTransfer(true);
+    try {
+      const { data } = await ticketsApi.transferDepartment(id, {
+        toDepartmentId: draftToDepartmentId,
+        transferReason: reason,
+      });
+      setTicket(data.data);
+      setTransferOpen(false);
+      enqueueSnackbar(`Ticket transferred to ${data.data.toDepartment?.name || "the new department"}`, { variant: "success" });
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Transfer failed", { variant: "error" });
+    } finally {
+      setSavingTransfer(false);
+    }
+  };
+
   if (loading || !ticket) return <LoadingState minHeight={400} />;
+
+  // Every active department is shown as a possible destination except the
+  // ticket's current one — a department with no active manager is NOT
+  // hidden here; it's still listed (with a "(No active manager)" hint) so
+  // the requirement is visible rather than silently unexplained. The
+  // backend (ticket.service.js#transferDepartment) is the sole enforcement
+  // point for "destination must have an active manager" and independently
+  // rejects the transfer if selected anyway.
+  const transferableDepartments = departments.filter((d) => d.id !== ticket.toDepartment?.id);
 
   const canReopen = isOwner && !isStaff && ["RESOLVED", "CLOSED"].includes(ticket.status);
 
@@ -253,23 +329,27 @@ export default function TicketDetailPage() {
     <Box sx={{ maxWidth: 1200, mx: "auto" }}>
       {/* Combined heading — ticket number and title together, so the
           ticket's identity and subject are read as one line instead of two
-          separated blocks — with the requester-edit icon at the far right. */}
+          separated blocks. The requester-edit icon sits directly beside
+          the title (not pushed to the far right of the row, which would
+          land it above the Ticket Information panel on desktop) — grouped
+          in its own inner Stack so it stays visually attached to the
+          heading regardless of Reopen Ticket's presence on the right. */}
       <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1} sx={{ mb: 3 }}>
-        <Typography variant="h4" sx={{ wordBreak: "break-word" }}>
-          {ticket.ticketNumber} - {ticket.title}
-        </Typography>
-        <Stack direction="row" alignItems="center" spacing={1} sx={{ flexShrink: 0 }}>
-          {canReopen && (
-            <Button variant="outlined" onClick={() => applyUpdate({ status: "REOPENED" })}>
-              Reopen Ticket
-            </Button>
-          )}
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0 }}>
+          <Typography variant="h4" sx={{ wordBreak: "break-word" }}>
+            {ticket.ticketNumber} - {ticket.title}
+          </Typography>
           {canEditAsRequester && (
             <IconButton onClick={() => navigate(`/tickets/${id}/edit`)} aria-label="Edit ticket" title="Edit ticket">
               <EditIcon />
             </IconButton>
           )}
         </Stack>
+        {canReopen && (
+          <Button variant="outlined" onClick={() => applyUpdate({ status: "REOPENED" })} sx={{ flexShrink: 0 }}>
+            Reopen Ticket
+          </Button>
+        )}
       </Stack>
 
       <Grid container spacing={3}>
@@ -295,7 +375,7 @@ export default function TicketDetailPage() {
               )}
             </Paper>
 
-            <AttachmentList attachments={ticket.attachments} />
+            <AttachmentList ticketId={ticket.id} attachments={ticket.attachments} />
 
             <CommentThread
               comments={ticket.comments}
@@ -333,6 +413,16 @@ export default function TicketDetailPage() {
                     {ticket.assignee ? "Reassign" : "Assign Ticket"}
                   </Button>
                 )}
+                {/* Separate action from Edit Ticket — its own permission
+                    matrix (excludes ADMIN even though canManage includes
+                    them; includes an assigned USER even though they can't
+                    otherwise manage the ticket). Backend independently
+                    enforces the same rule regardless of this button. */}
+                {canTransferDepartment && (
+                  <Button size="small" variant="outlined" color="secondary" startIcon={<SwapHorizIcon />} onClick={openTransferDialog}>
+                    Transfer Department
+                  </Button>
+                )}
               </Stack>
             )}
 
@@ -340,6 +430,7 @@ export default function TicketDetailPage() {
               <InfoRow label="Status" value={<StatusBadge status={ticket.status} />} />
               <InfoRow label="Priority" value={<PriorityBadge name={ticket.priority.name} color={ticket.priority.color} />} />
               <InfoRow label="Department" value={ticket.toDepartment?.name || "—"} />
+              <InfoRow label="Manager" value={ticket.manager?.name || "—"} />
               <InfoRow
                 label="Issue"
                 value={ticket.issue ? (ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name) : "—"}
@@ -422,7 +513,10 @@ export default function TicketDetailPage() {
       </Dialog>
 
       {/* Assign / Reassign — AGENT/ADMIN only (canManage); a plain USER
-          never sees this dialog or its trigger button. The dropdown is
+          never sees this dialog or its trigger button. "Assign to Me" is
+          only offered to an AGENT (isAgent), matching the backend's
+          AGENT-only assignToMe restriction — an ADMIN isn't a department
+          worker and has no self-assign action. The Team Members group is
           populated from the existing assignable-employees API, already
           scoped server-side to active USER employees in this ticket's own
           department — never every employee, never re-filtered client-side
@@ -446,6 +540,8 @@ export default function TicketDetailPage() {
               InputLabelProps={{ shrink: true }}
             >
               <MenuItem value="">Unassigned</MenuItem>
+              {isAgent && <MenuItem value={ASSIGN_TO_ME_VALUE}>Assign to Me</MenuItem>}
+              <ListSubheader>Team Members</ListSubheader>
               {assignableEmployees.map((a) => <MenuItem key={a.id} value={a.id}>{a.name}</MenuItem>)}
             </TextField>
           </Stack>
@@ -454,6 +550,61 @@ export default function TicketDetailPage() {
           <Button onClick={() => setAssignOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleSaveAssign} disabled={savingAssign}>
             {ticket.assignee ? "Reassign" : "Assign"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Transfer Department — deliberately its own dialog, never folded
+          into Edit Ticket. Destination list comes from GET /departments
+          (never hardcoded), excludes the ticket's current department and
+          any department with no active manager, and the reason is
+          mandatory. The backend independently re-validates every one of
+          these rules regardless of what this dialog allows to be selected. */}
+      <Dialog open={transferOpen} onClose={() => setTransferOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Transfer Ticket</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Box>
+              <Typography variant="caption" color="text.secondary">Current Department</Typography>
+              <Typography variant="body2" fontWeight={600}>{ticket.toDepartment?.name || "—"}</Typography>
+            </Box>
+
+            <TextField
+              select
+              required
+              size="small"
+              label="Transfer To"
+              value={draftToDepartmentId}
+              onChange={(e) => setDraftToDepartmentId(e.target.value)}
+              SelectProps={{ displayEmpty: true }}
+              InputLabelProps={{ shrink: true }}
+            >
+              <MenuItem value="" disabled>Select destination department</MenuItem>
+              {transferableDepartments.map((d) => (
+                <MenuItem key={d.id} value={d.id}>
+                  {d.name}{!d.managers?.length ? " (No active manager)" : ""}
+                </MenuItem>
+              ))}
+            </TextField>
+
+            <TextField
+              required
+              multiline
+              minRows={3}
+              size="small"
+              label="Transfer Reason"
+              placeholder="Explain why this ticket should move to the new department..."
+              value={draftTransferReason}
+              onChange={(e) => { setDraftTransferReason(e.target.value); setTransferReasonError(""); }}
+              error={Boolean(transferReasonError)}
+              helperText={transferReasonError}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTransferOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveTransfer} disabled={savingTransfer || !draftToDepartmentId}>
+            Transfer Ticket
           </Button>
         </DialogActions>
       </Dialog>

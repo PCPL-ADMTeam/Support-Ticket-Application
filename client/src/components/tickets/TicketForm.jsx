@@ -34,6 +34,12 @@ const ALLOWED_ATTACHMENT_TYPES = [
   "image/jpg",
 ];
 
+// Mirrors ticket.service.js's MAX_ATTACHMENTS_PER_TICKET exactly — this is
+// a UX convenience only (rejects an obviously over-limit selection
+// immediately instead of round-tripping to the server first); the backend
+// remains the authoritative, unbypassable check.
+const MAX_ATTACHMENTS_PER_TICKET = 5;
+
 /* =========================================================
    QUILL TOOLBAR
 ========================================================= */
@@ -266,10 +272,29 @@ export default function TicketForm({
      ATTACHMENT
   ========================================================= */
 
+  // A ticket may have at most MAX_ATTACHMENTS_PER_TICKET total — counting
+  // both what's already saved on the ticket (edit mode only; a new ticket
+  // always starts at 0) and whatever's already staged for upload in this
+  // form session.
+  const existingAttachmentCount = isEdit ? initialTicket?.attachments?.length || 0 : 0;
+  const remainingAttachmentSlots = Math.max(MAX_ATTACHMENTS_PER_TICKET - existingAttachmentCount - attachments.length, 0);
+
   const handleAttachmentChange = (event) => {
     const files = Array.from(event.target.files || []);
 
     if (!files.length) return;
+
+    // The limit is checked against the WHOLE selection first — a user
+    // picking more files than the remaining slots gets a clear rejection,
+    // never a silent truncation to "however many happened to fit."
+    if (files.length > remainingAttachmentSlots) {
+      setErrors((prev) => ({
+        ...prev,
+        attachments: `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket. You can upload only ${remainingAttachmentSlots} more file(s).`,
+      }));
+      event.target.value = "";
+      return;
+    }
 
     const validFiles = [];
     let rejectionMessage = "";
@@ -869,7 +894,7 @@ export default function TicketForm({
               ================================================= */}
 
               {isEdit && initialTicket?.attachments?.length > 0 && (
-                <AttachmentList attachments={initialTicket.attachments} />
+                <AttachmentList ticketId={initialTicket.id} attachments={initialTicket.attachments} />
               )}
 
               <Box>
@@ -877,31 +902,37 @@ export default function TicketForm({
                   {isEdit ? "Add Attachment" : "Attachment"}
                 </Typography>
 
-                <Button
-                  component="label"
-                  variant="outlined"
-                  startIcon={
-                    <AttachFileIcon />
-                  }
-                  sx={{
-                    textTransform: "none",
-                    borderRadius: 2,
-                    px: 2,
-                    py: 1,
-                  }}
-                >
-                  Upload File
-
-                  <input
-                    type="file"
-                    hidden
-                    multiple
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    onChange={
-                      handleAttachmentChange
+                {remainingAttachmentSlots > 0 ? (
+                  <Button
+                    component="label"
+                    variant="outlined"
+                    startIcon={
+                      <AttachFileIcon />
                     }
-                  />
-                </Button>
+                    sx={{
+                      textTransform: "none",
+                      borderRadius: 2,
+                      px: 2,
+                      py: 1,
+                    }}
+                  >
+                    Upload File
+
+                    <input
+                      type="file"
+                      hidden
+                      multiple
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={
+                        handleAttachmentChange
+                      }
+                    />
+                  </Button>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Maximum attachments reached — remove one to add another.
+                  </Typography>
+                )}
 
                 <Typography
                   sx={{
@@ -911,7 +942,8 @@ export default function TicketForm({
                   }}
                 >
                   PDF, JPG or PNG — up to{" "}
-                  {MAX_ATTACHMENT_MB} MB each
+                  {MAX_ATTACHMENT_MB} MB each. Maximum attachments: {MAX_ATTACHMENTS_PER_TICKET}
+                  {" "}({existingAttachmentCount + attachments.length}/{MAX_ATTACHMENTS_PER_TICKET} used)
                 </Typography>
 
                 {errors.attachments && (

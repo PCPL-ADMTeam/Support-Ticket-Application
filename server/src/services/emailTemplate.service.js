@@ -32,6 +32,8 @@ const SUPPORTED_PLACEHOLDERS = [
   "resolutionNotes",
   "onHoldReason",
   "closedReason",
+  "oldDepartment",
+  "transferReason",
 ];
 
 function stripHtml(value) {
@@ -49,7 +51,7 @@ function issueLabel(ticket) {
 // optional — a ticket/comment/statusChange that doesn't apply to a given
 // event just leaves those placeholders blank when rendered, rather than
 // failing.
-function buildPlaceholders({ ticket, comment, recipientName, statusChange } = {}) {
+function buildPlaceholders({ ticket, comment, recipientName, statusChange, departmentTransfer } = {}) {
   return {
     recipientName: recipientName || "",
     ticketNumber: ticket?.ticketNumber || "",
@@ -80,6 +82,13 @@ function buildPlaceholders({ ticket, comment, recipientName, statusChange } = {}
     // OPEN/IN_PROGRESS status-changed email sent after a ticket's *prior*
     // on-hold period would incorrectly show that old, unrelated reason.
     onHoldReason: statusChange?.newValue === "ON_HOLD" ? ticket?.onHoldReason || "" : "",
+    // TICKET_DEPARTMENT_TRANSFERRED only — `department` above already reads
+    // the ticket's CURRENT toDepartment (the new one, since this renders
+    // after the transfer already committed), so the old department name has
+    // nowhere else to come from and is passed in explicitly by the caller,
+    // the same way `statusChange` carries old/new status.
+    oldDepartment: departmentTransfer?.oldDepartmentName || "",
+    transferReason: departmentTransfer?.reason || "",
   };
 }
 

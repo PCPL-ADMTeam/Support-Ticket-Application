@@ -144,6 +144,24 @@ const emailTemplateDefaults = [
     ),
   },
   {
+    eventKey: "TICKET_DEPARTMENT_TRANSFERRED",
+    name: "Ticket Department Transferred",
+    subject: "Ticket {{ticketNumber}} Has Been Transferred to {{department}}",
+    body: wrap(
+      "This ticket has been transferred to your department and needs review.",
+      row("Ticket", "{{ticketNumber}}") +
+        row("Title", "{{title}}") +
+        row("Old Department", "{{oldDepartment}}") +
+        row("New Department", "{{department}}") +
+        row("Issue", "{{issue}}") +
+        row("Priority", "{{priority}}") +
+        row("Status", "{{status}}") +
+        row("Requester", "{{requesterName}}") +
+        row("Manager", "{{managerName}}") +
+        row("Transfer Reason", "{{transferReason}}"),
+    ),
+  },
+  {
     eventKey: "TICKET_CLOSED",
     name: "Ticket Closed",
     subject: "Ticket {{ticketNumber}} Closed",
