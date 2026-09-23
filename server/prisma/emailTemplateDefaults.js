@@ -147,7 +147,11 @@ const emailTemplateDefaults = [
     body: wrap(
       "{{commentAuthor}} added a new comment on ticket {{ticketNumber}}:",
       row("Ticket", "{{ticketNumber}}") + row("Title", "{{title}}") + row("Department", "{{department}}") + row("Status", "{{status}}"),
-      '<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #ddd;color:#333;font-size:13px;">{{comment}}</blockquote>',
+      // {{comment}} is blank (not "(No comment text)") whenever the comment
+      // has attachments — see emailTemplate.service.js#buildPlaceholders —
+      // so an attachment-only comment shows just the file list below, never
+      // an empty quote box.
+      '<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #ddd;color:#333;font-size:13px;">{{comment}}{{attachments}}</blockquote>',
     ),
   },
   {

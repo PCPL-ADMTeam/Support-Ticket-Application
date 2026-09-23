@@ -25,7 +25,7 @@ async function transferDepartment(req, res) {
 }
 
 async function addComment(req, res) {
-  const comment = await ticketService.addComment(req.user, req.params.id, req.body);
+  const comment = await ticketService.addComment(req.user, req.params.id, req.body, req.files || []);
   res.status(201).json({ success: true, data: comment });
 }
 

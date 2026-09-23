@@ -20,14 +20,56 @@ import TicketsListPage from "../TicketsListPage";
 // client-side.
 export default function AgentQueuePage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const view = searchParams.get("view") === "department" ? "department" : "my";
+  // Global header search (see AppShell.jsx) lands here as plain
+  // `?search=...`, with NO `view` of its own — it means "search everything
+  // I'm authorized to see," not "search only what I personally raised." So
+  // the default view when `view` is entirely absent depends on whether a
+  // search is active: no search -> "my" (the existing default, e.g. from
+  // the sidebar "Tickets" link); a search present -> "department" (the
+  // broadest tab an Agent has), so a department ticket the Agent didn't
+  // raise is still found instead of silently narrowed to Raised by Me. An
+  // EXPLICIT ?view=my|department (from actually clicking a tab) always
+  // wins either way.
+  // Global search mode: arrived with a search term but no EXPLICIT tab
+  // choice — the query must use the broadest "authorized" scope (every
+  // ticket this Agent may view: department + anything they personally
+  // raised, see ticket.service.js#scopeWhereForTab's "authorized" branch),
+  // never a tab's own restrictive scope. The moment the Agent explicitly
+  // clicks a tab (?view= appears in the URL), that tab's real scope takes
+  // over exactly as before — this only affects the unparameterized
+  // "just searched" landing state.
+  const isGlobalSearch = !searchParams.has("view") && Boolean(searchParams.get("search"));
+  // Department Tickets is shown as the active tab in this state purely as
+  // the least-misleading visual (an unhighlighted Tabs value would render
+  // with no indicator at all) — it does NOT mean department-only scope is
+  // actually applied; see additionalFilters below.
+  const view = searchParams.has("view")
+    ? (searchParams.get("view") === "department" ? "department" : "my")
+    : (isGlobalSearch ? "department" : "my");
   const isMy = view === "my";
   const myScope = searchParams.get("scope") === "assigned" ? "assigned" : "created";
 
-  const handleViewChange = (_, value) => setSearchParams({ view: value });
+  // Merges into the CURRENT params rather than replacing them outright, so
+  // switching tabs/sub-scope never silently drops an active `search` (or
+  // any other filter) — e.g. searching "HW-0034" then clicking "My Tickets"
+  // must keep searching for "HW-0034", now narrowed to that scope, not
+  // reset to an unfiltered My Tickets list.
+  const handleViewChange = (_, value) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("view", value);
+      if (value === "department") next.delete("scope");
+      return next;
+    });
+  };
   const handleMyScopeChange = (_, value) => {
     if (!value) return; // ToggleButtonGroup fires with null when the active button is clicked again
-    setSearchParams({ view: "my", scope: value });
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("view", "my");
+      next.set("scope", value);
+      return next;
+    });
   };
 
   // "" for scope on the department side deliberately clears any stale
@@ -35,8 +77,8 @@ export default function AgentQueuePage() {
   // department view is never accidentally narrowed by a leftover personal
   // scope.
   const additionalFilters = useMemo(
-    () => (isMy ? { scope: myScope } : { scope: "" }),
-    [isMy, myScope]
+    () => (isGlobalSearch ? { scope: "authorized" } : isMy ? { scope: myScope } : { scope: "" }),
+    [isGlobalSearch, isMy, myScope]
   );
 
   return (

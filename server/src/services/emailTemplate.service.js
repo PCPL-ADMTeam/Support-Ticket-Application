@@ -23,6 +23,7 @@ const SUPPORTED_PLACEHOLDERS = [
   "requesterName",
   "assigneeName",
   "comment",
+  "attachments",
   "resolution",
   "managerName",
   "commentAuthor",
@@ -37,6 +38,13 @@ const SUPPORTED_PLACEHOLDERS = [
   "resetLink",
 ];
 
+// Placeholders whose value is pre-built, already-safe HTML this service
+// generated itself (each dynamic part individually escaped) rather than a
+// single piece of user-supplied text — exempted from renderString's
+// generic per-placeholder escaping so that HTML isn't escaped a second
+// time into visible entities. See buildAttachmentsHtml.
+const RAW_PLACEHOLDER_KEYS = new Set(["attachments"]);
+
 function stripHtml(value) {
   if (typeof value !== "string") return value;
   return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -48,11 +56,33 @@ function issueLabel(ticket) {
   return ticket.issue?.name || "";
 }
 
+// TICKET_COMMENT_ADDED only — renders each attachment's ORIGINAL filename
+// (never its Azure blob path/key, which is never exposed here or anywhere
+// else client-facing) as its own "📎 name" line. Each filename is escaped
+// individually since this returns pre-built HTML that bypasses the
+// generic per-placeholder escaping below (see {{attachments}} in
+// renderTemplate) — a malicious filename can never inject markup this way.
+// Returns "" when there are no attachments, so {{attachments}} disappears
+// entirely rather than leaving a stray empty line.
+function buildAttachmentsHtml(comment, hasText) {
+  const files = comment?.attachments;
+  if (!files?.length) return "";
+  const items = files.map((a) => `📎 ${escapeHtml(a.fileName)}`).join("<br>");
+  // No top margin when this is the box's only content (attachment-only
+  // comment) — a visible gap above a list with nothing above it to
+  // separate from would look like leftover empty space, the exact "empty
+  // box" look this is fixing.
+  return `<div style="margin-top:${hasText ? "10px" : "0"};">${items}</div>`;
+}
+
 // All placeholders supported by the seeded templates. Every value is
 // optional — a ticket/comment/statusChange that doesn't apply to a given
 // event just leaves those placeholders blank when rendered, rather than
 // failing.
 function buildPlaceholders({ ticket, comment, recipientName, statusChange, departmentTransfer, resetLink } = {}) {
+  const commentText = stripHtml(comment?.body)?.trim() || "";
+  const hasCommentText = Boolean(commentText);
+  const hasAttachments = Boolean(comment?.attachments?.length);
   return {
     recipientName: recipientName || "",
     ticketNumber: ticket?.ticketNumber || "",
@@ -64,7 +94,16 @@ function buildPlaceholders({ ticket, comment, recipientName, statusChange, depar
     requesterName: ticket?.requester?.name || "",
     assigneeName: ticket?.assignee?.name || "Unassigned",
     managerName: ticket?.manager?.name || "",
-    comment: stripHtml(comment?.body) || "",
+    // TICKET_COMMENT_ADDED: text when there is any; if there's none but the
+    // comment has attachment(s), leave this blank so {{attachments}} below
+    // is the box's only content (no leftover empty line above the file
+    // list); if there's neither (only possible for legacy data predating
+    // the "text or attachment required" rule), fall back to a neutral
+    // label rather than an empty box. `comment` truthy scopes that fallback
+    // to this event only — every other event that doesn't pass a comment
+    // still renders "" here exactly as before.
+    comment: hasCommentText ? commentText : (hasAttachments || !comment ? "" : "(No comment text)"),
+    attachments: buildAttachmentsHtml(comment, hasCommentText),
     commentAuthor: comment?.author?.name || "",
     resolution: ticket?.status || "",
     oldStatus: statusChange?.oldValue || "",
@@ -117,11 +156,15 @@ function escapeHtml(value) {
 // leaving the literal "{{token}}" in the sent email. `escapeValues: true`
 // HTML-escapes each substituted value — used for the HTML body; the
 // plain-text subject is rendered unescaped (subjects aren't HTML).
-function renderString(str, data, { escapeValues = false } = {}) {
+// `rawKeys` exempts specific placeholders from that escaping — used only
+// for values this service built itself as already-safe HTML (see
+// {{attachments}}/buildAttachmentsHtml above, which escapes each filename
+// individually), never for anything sourced as-is from user input.
+function renderString(str, data, { escapeValues = false, rawKeys } = {}) {
   return String(str).replace(PLACEHOLDER_PATTERN, (_match, key) => {
     const value = data[key];
     if (value === undefined || value === null) return "";
-    return escapeValues ? escapeHtml(value) : String(value);
+    return escapeValues && !rawKeys?.has(key) ? escapeHtml(value) : String(value);
   });
 }
 
@@ -177,7 +220,7 @@ async function renderTemplate(eventKey, context) {
     const data = buildPlaceholders(context);
     return {
       subject: renderString(template.subject, data),
-      body: stripEmptyLabeledRows(renderString(template.body, data, { escapeValues: true })),
+      body: stripEmptyLabeledRows(renderString(template.body, data, { escapeValues: true, rawKeys: RAW_PLACEHOLDER_KEYS })),
     };
   } catch (err) {
     console.error(`[emailTemplate] Failed to render template for "${eventKey}":`, err.message);

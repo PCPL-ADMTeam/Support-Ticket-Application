@@ -52,7 +52,24 @@ const transferDepartmentValidator = [
 
 const commentValidator = [
   param("id").notEmpty(),
-  body("body").trim().notEmpty().withMessage("Comment body is required"),
+  // A comment is valid with text, attachments, or both — only rejected
+  // when BOTH are absent. customSanitizer/custom (unlike .optional()) always
+  // run regardless of whether `body` was sent at all, which an attachment-
+  // only submission may not — an .optional() chain would silently skip this
+  // check for exactly that case. req.files comes from multer (see
+  // ticket.routes.js), which runs before this validator. This is the
+  // fast-fail layer; ticket.service.js#addComment enforces the same rule
+  // authoritatively.
+  body("body")
+    .customSanitizer((value) => (typeof value === "string" ? value.trim() : ""))
+    .custom((value, { req }) => {
+      const hasText = Boolean(value);
+      const hasFiles = Boolean(req.files && req.files.length);
+      if (!hasText && !hasFiles) {
+        throw new Error("Comment must include text or at least one attachment");
+      }
+      return true;
+    }),
   body("isInternal").optional().isBoolean(),
 ];
 
@@ -69,7 +86,7 @@ const listTicketsValidator = [
   query("limit").optional().isInt({ min: 1, max: 100 }),
   query("departmentId").optional().isString(),
   query("issueId").optional().isString(),
-  query("scope").optional().isIn(["created", "assigned"]),
+  query("scope").optional().isIn(["created", "assigned", "authorized"]),
 ];
 
 module.exports = {

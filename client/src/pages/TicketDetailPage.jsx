@@ -187,11 +187,10 @@ export default function TicketDetailPage() {
     }
   };
 
-  const handleAddComment = async (payload, file) => {
+  const handleAddComment = async (payload, files) => {
     setCommentSubmitting(true);
     try {
-      const { data } = await ticketsApi.addComment(id, payload);
-      if (file) await ticketsApi.uploadAttachment(id, file, data.data.id);
+      await ticketsApi.addComment(id, payload, files);
       await load();
       enqueueSnackbar("Reply posted", { variant: "success" });
     } catch (err) {
@@ -378,6 +377,7 @@ export default function TicketDetailPage() {
             <AttachmentList ticketId={ticket.id} attachments={ticket.attachments} />
 
             <CommentThread
+              ticketId={ticket.id}
               comments={ticket.comments}
               isStaff={isStaff}
               onAddComment={handleAddComment}

@@ -33,7 +33,11 @@ router.patch("/:id", updateTicketValidator, validate, ticketController.update);
 // belong in updateTicket's staff-only toDepartmentId field.
 router.patch("/:id/transfer-department", transferDepartmentValidator, validate, ticketController.transferDepartment);
 
-router.post("/:id/comments", commentValidator, validate, ticketController.addComment);
+// Same "generous outer ceiling, real 5-per-ticket limit enforced in the
+// service" pattern as ticket creation above — multer here just needs to not
+// truncate a batch before ticket.service.js#addComment can produce its own
+// specific, user-facing message.
+router.post("/:id/comments", upload.array("attachments", 20), commentValidator, validate, ticketController.addComment);
 router.post("/:id/attachments", upload.single("file"), ticketController.uploadAttachment);
 router.get("/:id/attachments/:attachmentId/download", ticketController.downloadAttachment);
 router.delete("/:id/attachments/:attachmentId", ticketController.deleteAttachment);

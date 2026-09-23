@@ -8,6 +8,7 @@ const { recordAudit } = require("../utils/audit");
 const notificationService = require("./notification.service");
 const { sanitizeRichText } = require("../utils/sanitize");
 const { findActiveDepartmentManager } = require("../utils/departmentManager");
+const { resolveCommentRecipients } = require("../utils/commentRecipients");
 const blobStorageService = require("./blobStorage.service");
 const { uploadRoot } = require("../config/multer");
 
@@ -110,10 +111,19 @@ function assertCanViewForRead(user, ticket) {
 // than as this ticket's own department manager. An AGENT who IS this
 // ticket's department manager, or the person actually assigned to work
 // it, still sees everything, exactly as before.
-function scrubInternalComments(ticket, user) {
+// Shared by scrubInternalComments (what the comment list itself shows) and
+// streamAttachment (what a direct-by-id download request may return) so
+// both enforce exactly the same "who can see an internal note" rule — an
+// attachment on a hidden internal note must never be independently
+// downloadable just because its own id was guessed/known.
+function canViewInternalNotes(user, ticket) {
   const isAssignee = ticket.assigneeId === user.id;
   const isDepartmentStaff = user.role.name === "ADMIN" || (user.role.name === "AGENT" && ticket.toDepartmentId === user.departmentId);
-  if (!isDepartmentStaff && !isAssignee) {
+  return isDepartmentStaff || isAssignee;
+}
+
+function scrubInternalComments(ticket, user) {
+  if (!canViewInternalNotes(user, ticket)) {
     return { ...ticket, comments: ticket.comments.filter((c) => !c.isInternal) };
   }
   return ticket;
@@ -202,6 +212,24 @@ function scopeWhereForTab(user, scope) {
   // for any role (most usefully AGENT, whose own default scope is
   // department-based and unrelated to requesterId/assigneeId).
   if (scope === "mine") return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
+  // "authorized" = global search's own scope: everything the caller is
+  // allowed to VIEW, as distinct from "department" (an AGENT's normal
+  // list default, scopeWhereForUser below) and "mine"/"created"/"assigned"
+  // (an explicit personal tab). For ADMIN/USER, scopeWhereForUser(user)
+  // already covers everything they're allowed to view (unrestricted /
+  // raised-OR-assigned respectively), so this is identical to the default
+  // branch for them. For AGENT specifically, scopeWhereForUser is
+  // department-only and misses a ticket they personally raised to a
+  // DIFFERENT department — exactly the one extra case
+  // assertCanViewForRead's own read-only exception already grants a
+  // single ticket at a time, mirrored here as a list-query OR so global
+  // search can find that ticket too, never more than what that existing
+  // exception already permits.
+  if (scope === "authorized") {
+    return user.role.name === "AGENT"
+      ? { OR: [scopeWhereForUser(user), { requesterId: user.id }] }
+      : scopeWhereForUser(user);
+  }
   return scopeWhereForUser(user);
 }
 
@@ -227,7 +255,15 @@ async function listTickets(user, query) {
       query.assigned === "true" ? { assigneeId: { not: null } } : query.assigned === "false" ? { assigneeId: null } : {},
       query.overdue === "true" ? { dueAt: { lt: new Date() }, status: { notIn: ["RESOLVED", "CLOSED"] } } : {},
       query.dateFrom ? { createdAt: { gte: new Date(query.dateFrom) } } : {},
-      query.dateTo ? { createdAt: { lte: new Date(query.dateTo) } } : {},
+      // A date-only string (e.g. "2026-09-23") parses as that day's UTC
+      // midnight — using `lte` on that instant would exclude every ticket
+      // created later the same day (14:00 UTC, say), making "To" behave as
+      // if it meant the very start of the selected day rather than its end.
+      // Instead this treats dateTo as an EXCLUSIVE upper bound at the next
+      // day's UTC midnight, so the entire selected day is included no
+      // matter what time within it a ticket was created — symmetric with
+      // dateFrom's own UTC-midnight boundary above.
+      query.dateTo ? { createdAt: { lt: new Date(new Date(query.dateTo).getTime() + 24 * 60 * 60 * 1000) } } : {},
       // Global search — covers ticket number/title/description plus the
       // requester/assignee/department/issue it's linked to, per relation,
       // so "search requester name" etc. means "search among MY authorized
@@ -906,7 +942,7 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
   return scrubInternalComments(updated, user);
 }
 
-async function addComment(user, ticketId, { body, isInternal }) {
+async function addComment(user, ticketId, { body, isInternal }, files = []) {
   // Includes the same relations as ticketListInclude so the comment-
   // notification email template has department/priority/issue to show,
   // not just the bare ticket row.
@@ -922,7 +958,25 @@ async function addComment(user, ticketId, { body, isInternal }) {
     throw new ApiError(403, "Only the manager, admin, or assigned employee can add internal notes");
   }
 
-  const cleanBody = sanitizeRichText(body);
+  // Authoritative check (the commentValidator chain in ticket.routes.js is
+  // only the fast-fail layer) — a comment needs text, attachment(s), or
+  // both; rejected only when both are absent. Checked against the RAW
+  // trimmed input, not the sanitized HTML below, since sanitizing an empty
+  // string can still yield non-empty markup for some inputs.
+  const trimmedBody = (body || "").trim();
+  if (!trimmedBody && files.length === 0) {
+    throw new ApiError(400, "Comment must include text or at least one attachment");
+  }
+
+  // Early guard — same philosophy as createTicket/addAttachment: reject the
+  // whole batch before a single Azure upload starts (and before the comment
+  // itself is even created) if it obviously can't fit, rather than creating
+  // a comment and then silently dropping some of its attachments.
+  if (files.length > 0) {
+    await assertAttachmentLimit(ticketId, files.length);
+  }
+
+  const cleanBody = trimmedBody ? sanitizeRichText(trimmedBody) : "";
 
   const comment = await prisma.$transaction(async (tx) => {
     const created = await tx.ticketComment.create({
@@ -936,63 +990,49 @@ async function addComment(user, ticketId, { body, isInternal }) {
     return created;
   });
 
-  // Public comments notify the other party; internal notes never leave
-  // staff (skipped entirely below — no email for anyone). Three distinct
-  // cases, checked in priority order so an actor who is BOTH the requester
-  // AND staff (an Agent commenting on their own ticket) is treated as the
-  // requester case, not the staff case:
-  if (!isInternal) {
-    const isActorRequester = user.id === ticket.requesterId;
-    const isActorStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
-    const managerId = ticket.managerId;
+  // Attachments are uploaded to Azure (and their metadata saved) AFTER the
+  // comment above commits — same reasoning and the same reused
+  // addAttachment() call createTicket's own initial attachments already go
+  // through: the blob naming convention needs a real id that only exists
+  // once the row does, and network calls don't belong inside a DB
+  // transaction. Each file is independent and best-effort — a single
+  // failed upload is logged but doesn't undo the comment that was already
+  // successfully posted (same "a secondary side-effect failing must not
+  // roll back the primary action" precedent used throughout this file).
+  for (const file of files) {
+    await addAttachment(user, ticketId, file, comment.id).catch((err) => {
+      console.error(`[tickets] Failed to save attachment "${file.originalname}" for comment ${comment.id}:`, err.message);
+    });
+  }
+  const finalComment = files.length > 0
+    ? await prisma.ticketComment.findUnique({
+        where: { id: comment.id },
+        include: { author: { select: { id: true, name: true, role: { select: { name: true } } } }, attachments: true },
+      })
+    : comment;
 
-    if (isActorRequester) {
-      // CASE A: requester comments -> TO the assignee; CC the manager. If
-      // unassigned, TO the manager instead (so a comment on an unassigned
-      // ticket still reaches someone rather than nobody).
-      const to = ticket.assigneeId || managerId;
-      if (to) {
-        await notificationService.notify({
-          eventKey: "TICKET_COMMENT_ADDED",
-          userId: to,
-          ticketId,
-          type: "NEW_COMMENT",
-          ticket,
-          comment,
-          ccUserIds: to === ticket.assigneeId ? ccExcluding([managerId], to) : [],
-        });
-      }
-    } else if (isActorStaff) {
-      // CASE C: manager/staff comments -> TO both the requester and the
-      // current assignee (if one exists and differs from the actor), each
-      // as their OWN primary recipient — never CC'd to each other, and CC
-      // nobody else.
-      const toIds = ccExcluding([ticket.requesterId, ticket.assigneeId], user.id);
-      for (const to of toIds) {
-        await notificationService.notify({
-          eventKey: "TICKET_COMMENT_ADDED",
-          userId: to,
-          ticketId,
-          type: "NEW_COMMENT",
-          ticket,
-          comment,
-        });
-      }
-    } else {
-      // CASE B: assignee comments -> TO the requester; CC the manager.
+  // Public comments notify the other party; internal notes never leave
+  // staff (skipped entirely below — no email for anyone). See
+  // resolveCommentRecipients above for the fixed TO/CC matrix. An
+  // attachment-only public comment still triggers exactly this one email —
+  // there is no separate "attachment added" event, and addAttachment()
+  // itself never sends its own notification.
+  if (!isInternal) {
+    const { to, ccUserIds } = resolveCommentRecipients(ticket, user.id, user.role.name);
+    if (to) {
       await notificationService.notify({
         eventKey: "TICKET_COMMENT_ADDED",
-        userId: ticket.requesterId,
+        userId: to,
         ticketId,
         type: "NEW_COMMENT",
         ticket,
-        comment,
-        ccUserIds: ccExcluding([managerId], ticket.requesterId),
+        comment: finalComment,
+        ccUserIds,
       });
     }
   }
 
-  return comment;
+  return finalComment;
 }
 
 async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, teamId }) {
@@ -1068,7 +1108,12 @@ async function addAttachment(user, ticketId, file, commentId = null) {
           filePath: blobName,
           storageProvider: "azure",
           fileSize: file.size,
-          mimeType: file.mimetype,
+          // Some browsers/OS combinations report an empty mimetype for
+          // less common file types (e.g. certain .csv/.7z uploads) — stored
+          // as a safe generic fallback rather than an empty string so
+          // streamAttachment always has something valid to set as
+          // Content-Type.
+          mimeType: file.mimetype || "application/octet-stream",
         },
       });
     });
@@ -1094,11 +1139,30 @@ async function streamAttachment(user, ticketId, attachmentId, res) {
   if (!ticket) throw new ApiError(404, "Ticket not found");
   assertCanView(user, ticket);
 
-  const attachment = await prisma.ticketAttachment.findUnique({ where: { id: attachmentId } });
+  const attachment = await prisma.ticketAttachment.findUnique({
+    where: { id: attachmentId },
+    include: { comment: { select: { isInternal: true } } },
+  });
   if (!attachment || attachment.ticketId !== ticketId) throw new ApiError(404, "Attachment not found");
 
+  // An attachment on an internal note must be exactly as hidden as the note
+  // itself (see scrubInternalComments) — a requester who can't see the note
+  // in the comment list must not be able to fetch its attachment either,
+  // just by knowing/guessing the attachment's own id.
+  if (attachment.comment?.isInternal && !canViewInternalNotes(user, ticket)) {
+    throw new ApiError(404, "Attachment not found");
+  }
+
   res.setHeader("Content-Type", attachment.mimeType || "application/octet-stream");
-  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(attachment.fileName)}"`);
+  // "attachment" (not "inline") — this is a general file-download endpoint
+  // now that arbitrary file types are supported, and the frontend always
+  // fetches these bytes as a Blob rather than navigating the browser to
+  // this URL directly (see AttachmentList.jsx/CommentThread.jsx), so this
+  // has no effect on the existing inline image-preview behavior either way
+  // — it only matters for anything that DOES navigate here directly, which
+  // should always save-as using the original filename, never try to render
+  // a PDF/image in-tab.
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(attachment.fileName)}"`);
 
   if (attachment.storageProvider === "azure") {
     const downloadResponse = await blobStorageService.downloadBlobStream(attachment.filePath);
@@ -1158,4 +1222,5 @@ module.exports = {
   bulkUpdate,
   scopeWhereForUser,
   scopeWhereForTab,
+  resolveCommentRecipients,
 };

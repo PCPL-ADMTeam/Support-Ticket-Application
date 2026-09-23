@@ -27,13 +27,6 @@ import AttachmentList from "./AttachmentList";
 
 const MAX_ATTACHMENT_MB = 10;
 
-const ALLOWED_ATTACHMENT_TYPES = [
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "image/jpg",
-];
-
 // Mirrors ticket.service.js's MAX_ATTACHMENTS_PER_TICKET exactly — this is
 // a UX convenience only (rejects an obviously over-limit selection
 // immediately instead of round-tripping to the server first); the backend
@@ -296,20 +289,17 @@ export default function TicketForm({
       return;
     }
 
+    // General file types are allowed (images, documents, archives, etc.) —
+    // this is a UX convenience for the size limit only, same as the count
+    // check above; the backend's multer fileFilter (see
+    // server/src/config/multer.js) is the authoritative, unbypassable
+    // check, and blocks only genuinely dangerous file types, not a fixed
+    // allowlist of "safe" ones.
     const validFiles = [];
     let rejectionMessage = "";
 
     for (const file of files) {
-      if (!ALLOWED_ATTACHMENT_TYPES.includes(file.type)) {
-        rejectionMessage =
-          "Only PDF and image files (JPG/PNG) are supported.";
-        continue;
-      }
-
-      if (
-        file.size >
-        MAX_ATTACHMENT_MB * 1024 * 1024
-      ) {
+      if (file.size > MAX_ATTACHMENT_MB * 1024 * 1024) {
         rejectionMessage = `Files must be under ${MAX_ATTACHMENT_MB} MB.`;
         continue;
       }
@@ -922,7 +912,6 @@ export default function TicketForm({
                       type="file"
                       hidden
                       multiple
-                      accept=".pdf,.jpg,.jpeg,.png"
                       onChange={
                         handleAttachmentChange
                       }
@@ -941,7 +930,7 @@ export default function TicketForm({
                     color: "text.secondary",
                   }}
                 >
-                  PDF, JPG or PNG — up to{" "}
+                  Any file type — up to{" "}
                   {MAX_ATTACHMENT_MB} MB each. Maximum attachments: {MAX_ATTACHMENTS_PER_TICKET}
                   {" "}({existingAttachmentCount + attachments.length}/{MAX_ATTACHMENTS_PER_TICKET} used)
                 </Typography>
