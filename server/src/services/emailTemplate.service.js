@@ -34,6 +34,7 @@ const SUPPORTED_PLACEHOLDERS = [
   "closedReason",
   "oldDepartment",
   "transferReason",
+  "resetLink",
 ];
 
 function stripHtml(value) {
@@ -51,7 +52,7 @@ function issueLabel(ticket) {
 // optional — a ticket/comment/statusChange that doesn't apply to a given
 // event just leaves those placeholders blank when rendered, rather than
 // failing.
-function buildPlaceholders({ ticket, comment, recipientName, statusChange, departmentTransfer } = {}) {
+function buildPlaceholders({ ticket, comment, recipientName, statusChange, departmentTransfer, resetLink } = {}) {
   return {
     recipientName: recipientName || "",
     ticketNumber: ticket?.ticketNumber || "",
@@ -89,6 +90,10 @@ function buildPlaceholders({ ticket, comment, recipientName, statusChange, depar
     // the same way `statusChange` carries old/new status.
     oldDepartment: departmentTransfer?.oldDepartmentName || "",
     transferReason: departmentTransfer?.reason || "",
+    // PASSWORD_RESET_REQUESTED only — passed in directly by
+    // auth.service.js#forgotPassword, since there's no ticket to derive a
+    // link from (mirrors how ticketLink itself is built above).
+    resetLink: resetLink || "",
   };
 }
 

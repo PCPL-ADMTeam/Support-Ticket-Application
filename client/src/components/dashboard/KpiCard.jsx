@@ -7,10 +7,12 @@ export default function KpiCard({ label, value, color = "#c81e2a", icon, onClick
       variant="outlined"
       onClick={onClick}
       sx={{
-        p: 2,
+        p: 1.5,
+        height: "100%",
+        boxSizing: "border-box",
         display: "flex",
         alignItems: "center",
-        gap: 1.5,
+        gap: 1.25,
         cursor: onClick ? "pointer" : "default",
         borderRadius: 3,
         transition: "transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease",
@@ -37,10 +39,12 @@ export default function KpiCard({ label, value, color = "#c81e2a", icon, onClick
         {icon}
       </Box>
       <Box>
-        <Typography variant="h5" fontWeight={700} sx={{ fontVariantNumeric: "tabular-nums" }}>
+        <Typography variant="h6" sx={{ fontVariantNumeric: "tabular-nums", lineHeight: 1.2 }}>
           {value}
         </Typography>
-        <Typography variant="body2" color="text.secondary">{label}</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.25, display: "block" }}>
+          {label}
+        </Typography>
       </Box>
     </Paper>
   );

@@ -88,12 +88,32 @@ function assertCanView(user, ticket) {
   throw new ApiError(403, "You can only view tickets you raised or are assigned to");
 }
 
+// Read-only variant of assertCanView, used ONLY by getTicketById. An AGENT
+// who personally raised a ticket must still be able to open it after it's
+// routed to (or transferred into) a different department — being the
+// requester is sufficient to look at your own request's status/history,
+// mirroring the USER-role rule just below. Deliberately NOT folded into
+// assertCanView itself: that function also gates mutating actions
+// (comments/attachments/status changes/transfer), which stay exactly
+// department-scoped for an AGENT even on a ticket they raised elsewhere —
+// acting on another department's ticket is a materially different,
+// larger permission than merely viewing your own request's progress.
+function assertCanViewForRead(user, ticket) {
+  if (user.role.name === "AGENT" && ticket.requesterId === user.id) return;
+  assertCanView(user, ticket);
+}
+
 // Internal (staff-only) notes are stripped out before a response reaches
-// the ticket's requester — unless that same person is also the assignee
-// actually working the ticket, they still need to see the manager's notes.
+// anyone who isn't actually staff FOR THIS TICKET's own department — a
+// USER-role requester (unless also the assignee), or an AGENT viewing
+// solely via the requester exception above (assertCanViewForRead) rather
+// than as this ticket's own department manager. An AGENT who IS this
+// ticket's department manager, or the person actually assigned to work
+// it, still sees everything, exactly as before.
 function scrubInternalComments(ticket, user) {
   const isAssignee = ticket.assigneeId === user.id;
-  if (user.role.name === "USER" && !isAssignee) {
+  const isDepartmentStaff = user.role.name === "ADMIN" || (user.role.name === "AGENT" && ticket.toDepartmentId === user.departmentId);
+  if (!isDepartmentStaff && !isAssignee) {
     return { ...ticket, comments: ticket.comments.filter((c) => !c.isInternal) };
   }
   return ticket;
@@ -158,20 +178,39 @@ async function computeDueAt(priorityId, from = new Date()) {
   return new Date(from.getTime() + policy.resolutionTimeMinutes * 60000);
 }
 
+// "created"/"assigned" are self-sufficient authorization rules on their
+// own — requesterId/assigneeId always equals the authenticated caller's
+// own id, server-derived, never client-supplied — so they REPLACE the
+// normal role-based scopeWhereForUser rather than being ANDed with it.
+// This matters specifically for AGENT: scopeWhereForUser restricts an
+// AGENT to their own department, but "tickets I raised" (the Agent
+// dashboard/portal's "My Tickets" view) must include tickets raised to
+// OTHER departments too — ANDing the two would incorrectly hide those.
+// For ADMIN/USER this produces the exact same result as the old AND-based
+// version: ADMIN's scopeWhereForUser is unrestricted, and a USER's own
+// requesterId/assigneeId is already a subset of their existing
+// requesterId-OR-assigneeId scope. Shared with dashboard.service.js so
+// both mean exactly the same thing for the same scope value — no
+// duplicate/divergent filtering logic.
+function scopeWhereForTab(user, scope) {
+  if (scope === "assigned") return { assigneeId: user.id };
+  if (scope === "created") return { requesterId: user.id };
+  // "mine" = raised by me OR assigned to me, as ONE query (never a summed
+  // pair of separate counts) so a ticket matching both is never double
+  // counted — the exact same OR shape scopeWhereForUser already uses for a
+  // USER's own default scope, just made explicitly selectable via `scope`
+  // for any role (most usefully AGENT, whose own default scope is
+  // department-based and unrelated to requesterId/assigneeId).
+  if (scope === "mine") return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
+  return scopeWhereForUser(user);
+}
+
 async function listTickets(user, query) {
   const { page, limit, skip, take } = parsePagination(query);
 
   const where = {
     AND: [
-      scopeWhereForUser(user),
-      // Dashboard-driven "Raised by Me" / "Assigned to Me" list scope
-      // (mirrors dashboard.service.js's scopeWhereForTab for stats) — ANDed
-      // onto scopeWhereForUser above, never a replacement for it, so
-      // ?scope=assigned can only ever narrow within a caller's own
-      // authorized tickets, never expand it. For a USER this is what makes
-      // "requesterId=me OR assigneeId=me" collapse down to exactly one side
-      // when the dashboard asks for it.
-      query.scope === "created" ? { requesterId: user.id } : query.scope === "assigned" ? { assigneeId: user.id } : {},
+      scopeWhereForTab(user, query.scope),
       query.status ? { status: query.status } : {},
       query.priorityId ? { priorityId: query.priorityId } : {},
       query.categoryId ? { categoryId: query.categoryId } : {},
@@ -229,7 +268,7 @@ async function listTickets(user, query) {
 async function getTicketById(user, id) {
   const ticket = await prisma.ticket.findUnique({ where: { id }, include: ticketDetailInclude });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanView(user, ticket);
+  assertCanViewForRead(user, ticket);
   return scrubInternalComments(ticket, user);
 }
 
@@ -333,19 +372,13 @@ async function createTicket(user, payload, files = []) {
   }
   const finalTicket = files.length > 0 ? await prisma.ticket.findUnique({ where: { id: ticket.id }, include: ticketDetailInclude }) : ticket;
 
-  // The requester's own TICKET_CREATED copy must never CC the department
-  // manager — the manager already gets their own separate TICKET_CREATED
-  // notification just below. Every other event keeps the centralized
-  // manager-CC behavior (notification.service.js#notify's default).
-  await notificationService.notify({
-    eventKey: "TICKET_CREATED",
-    userId: user.id,
-    ticketId: finalTicket.id,
-    type: "TICKET_CREATED",
-    ticket: finalTicket,
-    skipManagerCc: true,
-  });
-
+  // ONE email, not two: TO the destination department's manager (they need
+  // to review/assign it), CC the requester (a receipt that it was raised).
+  // If the department currently has no active manager, fall back to a
+  // solo confirmation TO the requester — there's no valid "reviewer" to
+  // address it to, but the requester should still know their ticket was
+  // recorded (handles "no manager" safely without silently sending
+  // nothing).
   if (manager) {
     await notificationService.notify({
       eventKey: "TICKET_CREATED",
@@ -353,9 +386,26 @@ async function createTicket(user, payload, files = []) {
       ticketId: finalTicket.id,
       type: "TICKET_CREATED",
       ticket: finalTicket,
+      ccUserIds: [user.id],
+    });
+  } else {
+    await notificationService.notify({
+      eventKey: "TICKET_CREATED",
+      userId: user.id,
+      ticketId: finalTicket.id,
+      type: "TICKET_CREATED",
+      ticket: finalTicket,
     });
   }
 
+  // A ticket created with an assignee already attached (e.g. an Admin
+  // pre-assigning at creation) follows the SAME recipient rule as a normal
+  // post-creation assignment (see notifyOnUpdate's ASSIGNED handling
+  // below): TO the assignee, CC the manager (unconditionally — a standing
+  // departmental record, not a "you did this" notice). The requester is
+  // NOT CC'd here since the requester IS always the actor for this call
+  // (createTicket's caller is always the requester) — they already get
+  // their own separate TICKET_CREATED confirmation above.
   if (finalTicket.assigneeId) {
     const assignee = await prisma.user.findUnique({ where: { id: finalTicket.assigneeId } });
     if (assignee) {
@@ -365,6 +415,7 @@ async function createTicket(user, payload, files = []) {
         ticketId: finalTicket.id,
         type: "TICKET_ASSIGNED",
         ticket: finalTicket,
+        ccUserIds: manager?.id ? [manager.id] : [],
       });
     }
   }
@@ -620,69 +671,134 @@ function statusEventKey(newValue) {
   return "TICKET_STATUS_CHANGED";
 }
 
+// Picks the first id in `candidates` that isn't `excludeId` (the actor) —
+// used throughout below to find "who is the primary TO recipient," falling
+// back through a priority list (e.g. assignee, then manager) when the
+// first choice IS the actor or doesn't exist.
+function firstOther(candidates, excludeId) {
+  return candidates.find((id) => id && id !== excludeId);
+}
+
+// Builds a deduped CC id list: every candidate except falsy ones, the
+// actor, and whichever id was already chosen as TO. notify() itself also
+// drops unresolvable/inactive/duplicate-email addresses, so this only
+// needs to dedupe by id.
+function ccExcluding(candidates, ...exclude) {
+  const excluded = new Set(exclude.filter(Boolean));
+  return [...new Set(candidates.filter((id) => id && !excluded.has(id)))];
+}
+
 async function notifyOnUpdate(before, after, historyEntries, actor) {
-  const recipients = new Set([before.requesterId, before.assigneeId, after.assigneeId].filter((id) => id && id !== actor.id));
   // Distinguishes a ticket's first-ever assignment from a later reassignment
   // — purely to pick the right event key; who gets notified is unchanged.
   const wasAlreadyAssigned = Boolean(before.assigneeId);
 
   for (const entry of historyEntries) {
-    for (const userId of recipients) {
-      const recipient = await prisma.user.findUnique({ where: { id: userId } });
-      if (!recipient) continue;
-      if (entry.action === "STATUS_CHANGE") {
+    // --- Status changes (OPEN/IN_PROGRESS/ON_HOLD/RESOLVED/CLOSED) -------
+    // One consolidated email per transition, never one-per-recipient (the
+    // previous per-recipient loop could CC the department manager multiple
+    // times on the same status change — once per TO recipient). REOPENED
+    // has its own, different recipient shape (see below) since the
+    // relevant "who needs to act" answer is the assignee, not the
+    // requester.
+    if (entry.action === "STATUS_CHANGE" && entry.newValue !== "REOPENED") {
+      const to = firstOther([after.requesterId], actor.id);
+      if (to) {
         await notificationService.notify({
           eventKey: statusEventKey(entry.newValue),
-          userId,
+          userId: to,
           ticketId: after.id,
           type: "STATUS_CHANGED",
           ticket: after,
           statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
-        });
-      }
-      if (entry.action === "ASSIGNED" && userId === after.assigneeId) {
-        await notificationService.notify({
-          eventKey: wasAlreadyAssigned ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
-          userId,
-          ticketId: after.id,
-          type: "TICKET_ASSIGNED",
-          ticket: after,
+          ccUserIds: ccExcluding([after.assigneeId, after.managerId], actor.id, to),
         });
       }
     }
 
-    // Reopening specifically needs the department manager back in the loop
-    // even though `recipients` above only ever tracks requester/assignee.
-    if (entry.action === "STATUS_CHANGE" && entry.newValue === "REOPENED" && after.managerId && after.managerId !== actor.id && !recipients.has(after.managerId)) {
+    // --- Reopened ----------------------------------------------------
+    // TO the current assignee (the person who needs to act on it again);
+    // if unassigned, TO the department manager instead (someone needs to
+    // re-triage it). CC the manager (if not already TO) and the requester
+    // (unless the requester is the one who reopened it).
+    if (entry.action === "STATUS_CHANGE" && entry.newValue === "REOPENED") {
+      const to = firstOther([after.assigneeId, after.managerId], actor.id);
+      if (to) {
+        await notificationService.notify({
+          eventKey: "TICKET_REOPENED",
+          userId: to,
+          ticketId: after.id,
+          type: "STATUS_CHANGED",
+          ticket: after,
+          statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
+          ccUserIds: ccExcluding([after.managerId, after.requesterId], actor.id, to),
+        });
+      }
+    }
+
+    // --- Assignment ----------------------------------------------------
+    // Self-assignment ("Assign to Me") is a dedicated event handled in its
+    // own block below — never reuses this one, and is excluded here via
+    // `entry.newValue !== actor.id`.
+    //
+    // The manager is CC'd unconditionally — even when the manager IS the
+    // one who performed the assignment. This is deliberately different
+    // from every other event below: being CC'd here is a standing
+    // departmental record of who's now handling a ticket in the manager's
+    // own department, not a "you just did this" notice, so it's not
+    // excluded by the usual actor-exclusion rule. The requester, by
+    // contrast, IS excluded when they happen to be the one performing the
+    // assignment (only possible if the requester also holds a staff role)
+    // — for them a CC really would just be "you did this."
+    if (entry.action === "ASSIGNED" && after.assigneeId && entry.newValue === after.assigneeId && entry.newValue !== actor.id) {
+      const ccIds = [after.managerId, firstOther([after.requesterId], actor.id)].filter(Boolean);
       await notificationService.notify({
-        eventKey: "TICKET_REOPENED",
-        userId: after.managerId,
+        eventKey: wasAlreadyAssigned ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
+        userId: after.assigneeId,
         ticketId: after.id,
-        type: "STATUS_CHANGED",
+        type: "TICKET_ASSIGNED",
         ticket: after,
-        statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
+        ccUserIds: [...new Set(ccIds)],
       });
     }
 
-    // Requester edited their own ticket's content. Unlike `recipients`
-    // above (which excludes the actor), the requester is always notified
-    // here even though they're normally the one making this specific edit
-    // — the same "confirm to the person who just acted" pattern
-    // createTicket already uses for TICKET_CREATED. The assignee/manager
-    // (if any, and not already the requester) get the same email as a
-    // heads-up; a local Set dedupes so nobody is emailed twice even if
-    // e.g. the requester also happens to be the assignee.
+    // Self-assignment ("Assign to Me") — a dedicated event, distinct from
+    // the normal manager-assigns-employee TICKET_ASSIGNED/TICKET_REASSIGNED
+    // above. TO the requester only: never "assigned to you" wording sent to
+    // the actor themselves, and never CC'd back to the actor either — the
+    // actor IS this ticket's department manager (assignToMe's own
+    // AGENT-only + assertCanView gate guarantees it), so CC-ing "the
+    // manager" here would just be CC-ing the actor on their own action,
+    // which is exactly what must never happen. Skipped entirely if the
+    // requester happens to be the actor themselves (self-raised AND
+    // self-assigned — nothing meaningful to tell them).
+    if (entry.action === "ASSIGNED" && entry.newValue === actor.id && after.requesterId && after.requesterId !== actor.id) {
+      await notificationService.notify({
+        eventKey: "TICKET_SELF_ASSIGNED",
+        userId: after.requesterId,
+        ticketId: after.id,
+        type: "TICKET_ASSIGNED",
+        ticket: after,
+      });
+    }
+
+    // --- Requester edited their own ticket's content --------------------
+    // The requester is ALWAYS the actor for this event (only reachable via
+    // canRequesterEditDetails), so they are never notified about their own
+    // edit. TO the current assignee if one exists (they're the one working
+    // it), CC the manager; if unassigned, TO the manager instead (someone
+    // needs to see the change since nobody's actively assigned yet).
     if (entry.action === "TICKET_DETAILS_UPDATED") {
-      const notified = new Set();
-      for (const userId of [after.requesterId, after.assigneeId, after.managerId]) {
-        if (!userId || notified.has(userId)) continue;
-        notified.add(userId);
+      const to = after.assigneeId || after.managerId || null;
+      if (to) {
+        const ccIds = to === after.assigneeId ? ccExcluding([after.managerId], to) : [];
         await notificationService.notify({
           eventKey: "TICKET_UPDATED",
-          userId,
+          userId: to,
           ticketId: after.id,
           type: "TICKET_UPDATED",
           ticket: after,
+          ccUserIds: ccIds,
         });
       }
     }
@@ -773,17 +889,17 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
   // Dedicated event — never reuses TICKET_UPDATED. TO the destination
   // manager (a real Notification + email, same as every other "primary
   // recipient" call elsewhere in this file); CC the requester as an FYI
-  // only. `ccUserId` replaces notify()'s default "CC the current department
-  // manager" behavior entirely for this one call, so the OLD department's
-  // manager is never CC'd, and nobody is emailed merely for having
-  // performed the transfer (see notification.service.js).
+  // only. The OLD department's manager is never CC'd (there is no implicit
+  // "current department manager" auto-CC anymore — every recipient here is
+  // explicit), and the actor is never emailed merely for having performed
+  // the transfer.
   await notificationService.notify({
     eventKey: "TICKET_DEPARTMENT_TRANSFERRED",
     userId: newManager.id,
     ticketId: updated.id,
     type: "TICKET_DEPARTMENT_TRANSFERRED",
     ticket: updated,
-    ccUserId: updated.requesterId,
+    ccUserIds: [updated.requesterId],
     departmentTransfer: { oldDepartmentName, reason },
   });
 
@@ -820,21 +936,59 @@ async function addComment(user, ticketId, { body, isInternal }) {
     return created;
   });
 
-  // Public comments notify the other party; internal notes never leave staff.
+  // Public comments notify the other party; internal notes never leave
+  // staff (skipped entirely below — no email for anyone). Three distinct
+  // cases, checked in priority order so an actor who is BOTH the requester
+  // AND staff (an Agent commenting on their own ticket) is treated as the
+  // requester case, not the staff case:
   if (!isInternal) {
-    const notifyUserId = user.id === ticket.requesterId ? ticket.assigneeId : ticket.requesterId;
-    if (notifyUserId) {
-      const recipient = await prisma.user.findUnique({ where: { id: notifyUserId } });
-      if (recipient) {
+    const isActorRequester = user.id === ticket.requesterId;
+    const isActorStaff = user.role.name === "ADMIN" || user.role.name === "AGENT";
+    const managerId = ticket.managerId;
+
+    if (isActorRequester) {
+      // CASE A: requester comments -> TO the assignee; CC the manager. If
+      // unassigned, TO the manager instead (so a comment on an unassigned
+      // ticket still reaches someone rather than nobody).
+      const to = ticket.assigneeId || managerId;
+      if (to) {
         await notificationService.notify({
           eventKey: "TICKET_COMMENT_ADDED",
-          userId: notifyUserId,
+          userId: to,
+          ticketId,
+          type: "NEW_COMMENT",
+          ticket,
+          comment,
+          ccUserIds: to === ticket.assigneeId ? ccExcluding([managerId], to) : [],
+        });
+      }
+    } else if (isActorStaff) {
+      // CASE C: manager/staff comments -> TO both the requester and the
+      // current assignee (if one exists and differs from the actor), each
+      // as their OWN primary recipient — never CC'd to each other, and CC
+      // nobody else.
+      const toIds = ccExcluding([ticket.requesterId, ticket.assigneeId], user.id);
+      for (const to of toIds) {
+        await notificationService.notify({
+          eventKey: "TICKET_COMMENT_ADDED",
+          userId: to,
           ticketId,
           type: "NEW_COMMENT",
           ticket,
           comment,
         });
       }
+    } else {
+      // CASE B: assignee comments -> TO the requester; CC the manager.
+      await notificationService.notify({
+        eventKey: "TICKET_COMMENT_ADDED",
+        userId: ticket.requesterId,
+        ticketId,
+        type: "NEW_COMMENT",
+        ticket,
+        comment,
+        ccUserIds: ccExcluding([managerId], ticket.requesterId),
+      });
     }
   }
 
@@ -876,8 +1030,14 @@ async function addAttachment(user, ticketId, file, commentId = null) {
   // obviously over the limit.
   await assertAttachmentLimit(ticketId, 1);
 
+  // New uploads are organized by the ticket's human-readable ticketNumber
+  // (e.g. "BI-001") rather than its internal id — purely a Blob folder
+  // naming choice; TicketAttachment.ticketId below still always stores
+  // Ticket.id, and this has no effect on already-uploaded attachments,
+  // whose stored filePath (under the old <ticketId> folder) is reused
+  // as-is by streamAttachment/deleteAttachment.
   const blobName = await blobStorageService.uploadBuffer({
-    ticketId,
+    blobFolder: ticket.ticketNumber,
     buffer: file.buffer,
     originalName: file.originalname,
     mimeType: file.mimetype,
@@ -997,4 +1157,5 @@ module.exports = {
   deleteAttachment,
   bulkUpdate,
   scopeWhereForUser,
+  scopeWhereForTab,
 };

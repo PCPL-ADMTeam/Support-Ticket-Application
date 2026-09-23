@@ -62,4 +62,22 @@ async function changePassword(req, res) {
   res.json({ success: true, message: "Password updated successfully" });
 }
 
-module.exports = { login, refresh, logout, me, changePassword };
+// Identical response regardless of whether the email exists, is inactive,
+// or actually received a reset email — authService.forgotPassword() never
+// throws and never returns anything this handler could branch on, so
+// there is no code path here that could leak account existence.
+async function forgotPassword(req, res) {
+  await authService.forgotPassword(req.body.email);
+  res.json({
+    success: true,
+    message: "If an account exists for this email address, a password reset link has been sent.",
+  });
+}
+
+async function resetPassword(req, res) {
+  const { token, password } = req.body;
+  await authService.resetPassword(token, password);
+  res.json({ success: true, message: "Your password has been reset successfully." });
+}
+
+module.exports = { login, refresh, logout, me, changePassword, forgotPassword, resetPassword };

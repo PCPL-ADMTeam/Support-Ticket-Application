@@ -5,6 +5,8 @@ import { ThemeModeProvider } from "./context/ThemeModeContext";
 import ProtectedRoute, { homeForRole } from "./routes/ProtectedRoute";
 
 import LoginPage from "./pages/auth/LoginPage";
+import ForgotPasswordPage from "./pages/auth/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/auth/ResetPasswordPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import TicketDetailPage from "./pages/TicketDetailPage";
 import EditTicketPage from "./pages/EditTicketPage";
@@ -47,6 +49,14 @@ export default function App() {
           <AuthProvider>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
+              {/* Password reset — intentionally OUTSIDE ProtectedRoute.
+                  Unlike /tickets/:id (requires a Solvora session, then
+                  checks ticket authorization), these two pages require NO
+                  login at all; access is governed entirely by possessing a
+                  valid, unexpired, unused reset token (verified server-side
+                  by POST /auth/reset-password), not by ProtectedRoute. */}
+              <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+              <Route path="/reset-password" element={<ResetPasswordPage />} />
 
               {/* Any authenticated role — shell adapts to the caller's role */}
               <Route element={<ProtectedRoute />}>

@@ -1,7 +1,6 @@
 const prisma = require("../config/prisma");
 const emailService = require("./email.service");
 const emailTemplateService = require("./emailTemplate.service");
-const { findActiveDepartmentManager } = require("../utils/departmentManager");
 
 // Used ONLY when the PostgreSQL EmailTemplate for `eventKey` is missing,
 // inactive, or fails to render (Step 7) — a minimal safety net so the
@@ -19,19 +18,28 @@ function fallbackContent(eventKey, ticket) {
 // Creates an in-app Notification row AND emails the user via the existing
 // Microsoft Graph email.service.js — used for every ticket lifecycle event.
 // Architecture: ticket.service.js decides WHEN to call this and WHO
-// receives it (via `userId`) by passing an `eventKey`; the PostgreSQL
-// EmailTemplate matching that eventKey (emailTemplate.service.js) decides
-// WHAT the subject/body say; email.service.js's existing Graph
-// implementation decides HOW it's delivered — untouched here. This
-// function itself never hardcodes notification/email content beyond the
-// `fallbackContent` safety net above.
+// receives it (via `userId` for TO, `ccUserIds` for CC — see below) by
+// passing an `eventKey`; the PostgreSQL EmailTemplate matching that
+// eventKey (emailTemplate.service.js) decides WHAT the subject/body say;
+// email.service.js's existing Graph implementation decides HOW it's
+// delivered — untouched here. This function itself never hardcodes
+// notification/email content beyond the `fallbackContent` safety net above.
 //
-// The destination address is always resolved server-side from `userId`
-// (email.service#resolveUserEmail) — callers never pass a raw email.
-// `type` is kept only for the legacy Notification.type column (the
-// notification bell UI doesn't branch on it); it defaults to `eventKey`.
-// Failures anywhere in here are logged, never thrown, so a notification
-// problem can't fail the ticket action that triggered it.
+// Recipient resolution is centralized HERE, not scattered per call site:
+// every address is resolved server-side from a user id
+// (email.service#resolveUserEmail, which itself now skips inactive users)
+// — callers never pass a raw email. `ccUserIds` is an explicit, always-
+// complete list of user ids to CC for THIS specific event; there is no
+// hidden default "CC the department manager" behavior anymore — every
+// ticket.service.js call site computes exactly who belongs in TO/CC per
+// the event's own recipient rule and passes that list directly. This
+// function's only remaining jobs are: resolve ids -> emails, drop
+// unresolvable/inactive addresses, dedupe against the primary TO and
+// against each other, and send. `type` is kept only for the legacy
+// Notification.type column (the notification bell UI doesn't branch on
+// it); it defaults to `eventKey`. Failures anywhere in here are logged,
+// never thrown, so a notification problem can't fail the ticket action
+// that triggered it.
 // The in-app notification bell renders `message` as plain text (React
 // children, no dangerouslySetInnerHTML) — it never interprets HTML. Now
 // that the rendered body is HTML (for the email), the bell needs a
@@ -41,20 +49,7 @@ function stripHtmlForBell(html) {
   return String(html).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-// `skipManagerCc` exists solely for TICKET_CREATED's requester email (see
-// ticket.service.js#createTicket): the department manager already gets
-// their OWN separate TICKET_CREATED notify() call, so CC'ing them again on
-// the requester's copy would be a duplicate, not a heads-up. Every other
-// call site leaves this at its default (false), preserving the existing
-// centralized manager-CC behavior for every other event unchanged.
-//
-// `ccUserId` is a different kind of override: an explicit, event-specific
-// CC recipient that REPLACES the default "CC the ticket's current
-// department manager" behavior entirely, rather than merely skipping it —
-// used by TICKET_DEPARTMENT_TRANSFERRED, whose own recipient rule (TO the
-// destination manager, CC the requester) has nothing to do with
-// resolveDepartmentManagerCc's usual "current department" logic.
-async function notify({ eventKey, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, skipManagerCc = false, ccUserId = null }) {
+async function notify({ eventKey, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, ccUserIds = [] }) {
   let recipientName;
   try {
     const recipient = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
@@ -78,56 +73,38 @@ async function notify({ eventKey, userId, ticketId, type, ticket, comment, statu
     const email = await emailService.resolveUserEmail(userId);
     if (!email) return;
 
-    // CC the ticket's CURRENT department's active AGENT manager on every
-    // one of these ticket lifecycle emails — applied centrally here so
-    // none of ticket.service.js's ~15 call sites into notify() needed to
-    // change. "Current" department, not whatever the ticket's stored
-    // `manager`/`managerId` snapshot says, since that can go stale if the
-    // department's manager changes after the ticket was created — reuses
-    // the exact same lookup createTicket already uses to derive a manager
-    // in the first place. Never added if it would duplicate the primary
-    // recipient, and never fails the email if no manager exists.
-    let cc;
-    if (ccUserId) {
-      cc = await resolveExplicitCc(ccUserId, email);
-    } else if (!skipManagerCc) {
-      cc = await resolveDepartmentManagerCc(ticket, email);
-    }
+    const cc = await resolveCcEmails(ccUserIds, email);
 
-    await emailService.sendMail({ to: email, cc, subject, html: body });
+    await emailService.sendMail({ to: email, cc: cc.length ? cc : undefined, subject, html: body });
   } catch (err) {
     console.error(`[notifications] Failed to email user ${userId}:`, err.message);
   }
 }
 
-async function resolveExplicitCc(ccUserId, primaryEmail) {
-  try {
-    const ccEmail = await emailService.resolveUserEmail(ccUserId);
-    if (!ccEmail || ccEmail.toLowerCase() === primaryEmail.toLowerCase()) return undefined;
-    return ccEmail;
-  } catch (err) {
-    console.error(`[notifications] Failed to resolve explicit CC user ${ccUserId}:`, err.message);
-    return undefined;
-  }
-}
-
-async function resolveDepartmentManagerCc(ticket, primaryEmail) {
-  const departmentId = ticket?.toDepartmentId || ticket?.toDepartment?.id;
-  if (!departmentId) return undefined;
-
-  try {
-    const manager = await findActiveDepartmentManager(departmentId);
-    if (!manager) {
-      console.log(`[notifications] No active department manager found for department ${departmentId} — sending without CC.`);
-      return undefined;
+// Resolves each candidate CC user id to a deliverable email, silently
+// dropping: falsy ids, unresolvable users, inactive users (resolveUserEmail
+// itself now returns null for those), the primary TO address, and any
+// duplicate that already appears earlier in the list — so a caller can
+// freely pass e.g. [managerId, requesterId] without separately worrying
+// about either one coinciding with the primary recipient or with each
+// other.
+async function resolveCcEmails(ccUserIds, primaryEmail) {
+  const seen = new Set([primaryEmail.toLowerCase()]);
+  const emails = [];
+  for (const ccUserId of ccUserIds) {
+    if (!ccUserId) continue;
+    try {
+      const ccEmail = await emailService.resolveUserEmail(ccUserId);
+      if (!ccEmail) continue;
+      const key = ccEmail.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      emails.push(ccEmail);
+    } catch (err) {
+      console.error(`[notifications] Failed to resolve CC user ${ccUserId}:`, err.message);
     }
-    const managerEmail = await emailService.resolveUserEmail(manager.id);
-    if (!managerEmail || managerEmail.toLowerCase() === primaryEmail.toLowerCase()) return undefined;
-    return managerEmail;
-  } catch (err) {
-    console.error(`[notifications] Failed to resolve department manager CC for department ${departmentId}:`, err.message);
-    return undefined;
   }
+  return emails;
 }
 
 async function listForUser(userId, { unreadOnly } = {}) {

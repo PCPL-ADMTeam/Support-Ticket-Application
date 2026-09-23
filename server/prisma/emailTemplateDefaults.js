@@ -29,7 +29,7 @@ const emailTemplateDefaults = [
     name: "Ticket Created",
     subject: "New Support Ticket {{ticketNumber}} Created",
     body: wrap(
-      "A new support ticket has been raised.",
+      "A new support ticket has been raised for the {{department}} department and needs your review and assignment.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
@@ -52,6 +52,28 @@ const emailTemplateDefaults = [
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Manager", "{{managerName}}"),
+    ),
+  },
+  {
+    // Sent to the REQUESTER when a department manager (AGENT) assigns a
+    // ticket to THEMSELVES via "Assign to Me" — deliberately separate from
+    // TICKET_ASSIGNED (which is sent to the assignee, not the requester,
+    // for a normal manager-assigns-employee action) so a self-assigning
+    // manager never receives "the ticket has been assigned to you" about
+    // their own action, and the requester always sees the real assignee's
+    // name via {{assigneeName}}, never a placeholder like "Assign to Me".
+    eventKey: "TICKET_SELF_ASSIGNED",
+    name: "Ticket Self-Assigned (Requester Notice)",
+    subject: "Ticket {{ticketNumber}} Has Been Assigned",
+    body: wrap(
+      "Your support ticket has been assigned to {{assigneeName}}, who will be handling the ticket.",
+      row("Ticket", "{{ticketNumber}}") +
+        row("Title", "{{title}}") +
+        row("Department", "{{department}}") +
+        row("Issue", "{{issue}}") +
+        row("Priority", "{{priority}}") +
+        row("Status", "{{status}}") +
+        row("Assignee", "{{assigneeName}}"),
     ),
   },
   {
@@ -133,7 +155,7 @@ const emailTemplateDefaults = [
     name: "Ticket Updated",
     subject: "Ticket {{ticketNumber}} has been updated",
     body: wrap(
-      "Changes have been made to your ticket.",
+      "The requester has updated the details of a ticket you're handling.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
@@ -175,6 +197,25 @@ const emailTemplateDefaults = [
         row("Assignee", "{{assigneeName}}") +
         row("Closed Reason", "{{closedReason}}"),
     ),
+  },
+  {
+    // Not a ticket-lifecycle event, so this deliberately does NOT use the
+    // wrap()/row()/BUTTON helpers above (BUTTON is hardcoded to
+    // {{ticketLink}} and "View Ticket" — wrong link and wrong label here).
+    // Same visual language (font, colors, button style) written directly
+    // instead.
+    eventKey: "PASSWORD_RESET_REQUESTED",
+    name: "Password Reset Requested",
+    subject: "Reset Your Solvora Password",
+    body: `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;color:#1a1a1a;">
+  <p style="margin:0 0 12px;">Hello {{recipientName}},</p>
+  <p style="margin:0 0 16px;color:#444;">We received a request to reset the password for your Solvora account.</p>
+  <p style="margin:0 0 16px;color:#444;">Click the button below to create a new password.</p>
+  <p style="margin:20px 0;"><a href="{{resetLink}}" style="display:inline-block;padding:12px 20px;background:#b43d35;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;font-family:Arial,Helvetica,sans-serif;font-size:14px;">Reset Password</a></p>
+  <p style="margin:0 0 16px;color:#444;font-size:13px;">This link will expire in 30 minutes and can only be used once.</p>
+  <p style="margin:0 0 16px;color:#444;font-size:13px;">If you did not request a password reset, you can safely ignore this email.</p>
+  <p style="color:#888;font-size:12px;margin-top:24px;">Regards,<br>Solvora Support Team</p>
+</div>`,
   },
 ];
 

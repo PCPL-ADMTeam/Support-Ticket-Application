@@ -65,9 +65,14 @@ async function sendMail({ to, cc, subject, html, text }) {
 // prefer Entra's `mail` over `userPrincipalName` when both exist. Never
 // throws — any failure just falls back to the Helpdesk email so a
 // notification is still attempted, and is logged for visibility.
+// A deactivated account never resolves to an address at all — this is the
+// single, central point every ticket notification's TO/CC resolution
+// funnels through (notification.service.js#notify), so "never email an
+// inactive user" only needs to be enforced here, once, rather than at each
+// of ticket.service.js's call sites.
 async function resolveUserEmail(userId) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) return null;
+  if (!user || !user.isActive) return null;
 
   if (!entraService.isConfigured()) {
     return user.email || null;

@@ -1,6 +1,6 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../config/prisma");
-const { scopeWhereForUser } = require("./ticket.service");
+const { scopeWhereForUser, scopeWhereForTab } = require("./ticket.service");
 
 const STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"];
 
@@ -19,15 +19,13 @@ function scopeSqlForUser(user) {
 // "My Tickets" (assigned to me) vs "My Requests" (raised by me) dashboard
 // tabs — independent of role, driven purely by real assigneeId/requesterId
 // columns so the numbers always reflect actual tickets, never hardcoded.
-function scopeWhereForTab(user, scope) {
-  if (scope === "assigned") return { assigneeId: user.id };
-  if (scope === "created") return { requesterId: user.id };
-  return scopeWhereForUser(user);
-}
-
+// scopeWhereForTab itself is now imported from ticket.service.js (single
+// source of truth, shared with listTickets) instead of being redefined
+// here — same logic, same result, just no longer duplicated.
 function scopeSqlForTab(user, scope) {
   if (scope === "assigned") return Prisma.sql`"assigneeId" = ${user.id}`;
   if (scope === "created") return Prisma.sql`"requesterId" = ${user.id}`;
+  if (scope === "mine") return Prisma.sql`("requesterId" = ${user.id} OR "assigneeId" = ${user.id})`;
   return scopeSqlForUser(user);
 }
 
@@ -55,6 +53,9 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
   // being raised still counts here) — plain requesterId match, same
   // definition scopeWhereForTab's own "created" branch already uses.
   const raisedByMeWhere = { AND: [{ requesterId: user.id }, dateWhere] };
+  // assignedToMe: mirrors raisedByMe exactly, for assigneeId instead of
+  // requesterId — the Agent "My Dashboard"'s own "Assigned to Me" KPI.
+  const assignedToMeWhere = { AND: [{ assigneeId: user.id }, dateWhere] };
   // totalDepartmentTickets: reuses ticket.service.js's own
   // scopeWhereForUser — for an AGENT that's exactly "tickets currently
   // routed to my department" (toDepartmentId match), the SAME rule
@@ -72,6 +73,7 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     totalCount,
     unassignedCount,
     raisedByMe,
+    assignedToMe,
     totalDepartmentTickets,
   ] = await Promise.all([
     prisma.ticket.groupBy({ by: ["status"], where, _count: { _all: true } }),
@@ -82,6 +84,7 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     // display it.
     prisma.ticket.count({ where: { AND: [...where.AND, { assigneeId: null }] } }),
     prisma.ticket.count({ where: raisedByMeWhere }),
+    prisma.ticket.count({ where: assignedToMeWhere }),
     prisma.ticket.count({ where: departmentWhere }),
   ]);
 
@@ -91,6 +94,7 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     total: totalCount,
     unassigned: unassignedCount,
     raisedByMe,
+    assignedToMe,
     totalDepartmentTickets,
     ...Object.fromEntries(STATUSES.map((s) => [s.toLowerCase(), 0])),
   };

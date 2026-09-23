@@ -62,6 +62,7 @@ model User {
   notifications     Notification[]
   auditLogs         AuditLog[]
   refreshTokens     RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([roleId])
   @@index([departmentId])
@@ -80,6 +81,27 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+// "Forgot Password" flow. Mirrors RefreshToken's own storage convention
+// exactly: only a SHA-256 hash of the raw token is ever persisted (see
+// utils/jwt.js#hashToken, reused as-is) — the raw, cryptographically
+// random token itself is emailed to the user once and never stored
+// anywhere. usedAt (nullable) makes a token single-use: set the moment a
+// reset succeeds, and checked alongside expiresAt before honoring any
+// token (see auth.service.js#resetPassword).
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
 }
 
 // ---------------------------------------------------------------------------

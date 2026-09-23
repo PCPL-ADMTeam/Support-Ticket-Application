@@ -43,18 +43,26 @@ function sanitizeFilename(originalName) {
   return `${base}${ext}`;
 }
 
-// attachments/<ticketId>/<unique-id>-<sanitized-original-filename> — never
-// the raw original filename alone, so two uploads of "invoice.pdf" (by
-// different users, or the same user twice) can never collide or overwrite
-// each other.
-function buildBlobName(ticketId, originalName) {
+// attachments/<blobFolder>/<unique-id>-<sanitized-original-filename> —
+// never the raw original filename alone, so two uploads of "invoice.pdf"
+// (by different users, or the same user twice) can never collide or
+// overwrite each other. `blobFolder` is caller-provided — ticket.service.js
+// passes the ticket's human-readable ticketNumber (e.g. "BI-001") for new
+// uploads so the Blob folder is meaningful in the Azure portal, without
+// this function having any opinion on what the folder represents or
+// touching what TicketAttachment.ticketId stores in Postgres (still always
+// the internal Ticket.id — see ticket.service.js#addAttachment). Existing
+// blobs already stored under their old <ticketId> folder are unaffected:
+// download/delete never reconstruct a path, they just reuse whatever
+// filePath was recorded on the attachment row at upload time.
+function buildBlobName(blobFolder, originalName) {
   const uniqueId = crypto.randomUUID();
-  return `attachments/${ticketId}/${uniqueId}-${sanitizeFilename(originalName)}`;
+  return `attachments/${blobFolder}/${uniqueId}-${sanitizeFilename(originalName)}`;
 }
 
-async function uploadBuffer({ ticketId, buffer, originalName, mimeType }) {
+async function uploadBuffer({ blobFolder, buffer, originalName, mimeType }) {
   const containerClient = await getContainerClient();
-  const blobName = buildBlobName(ticketId, originalName);
+  const blobName = buildBlobName(blobFolder, originalName);
   const blockBlobClient = containerClient.getBlockBlobClient(blobName);
   await blockBlobClient.uploadData(buffer, {
     blobHTTPHeaders: { blobContentType: mimeType || "application/octet-stream" },

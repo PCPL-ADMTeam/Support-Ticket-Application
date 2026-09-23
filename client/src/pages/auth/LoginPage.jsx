@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { Box, Paper, TextField, Button, Typography, Alert, Stack, IconButton, InputAdornment } from "@mui/material";
+import { useNavigate, useLocation, Link as RouterLink } from "react-router-dom";
+import { Box, Paper, TextField, Button, Typography, Alert, Stack, IconButton, InputAdornment, Link } from "@mui/material";
 import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import { useAuth } from "../../context/AuthContext";
@@ -80,6 +80,11 @@ export default function LoginPage() {
                 ),
               }}
             />
+            <Box sx={{ textAlign: "right", mt: -1 }}>
+              <Link component={RouterLink} to="/forgot-password" variant="body2" underline="hover" color="text.secondary">
+                Forgot Password?
+              </Link>
+            </Box>
             <Button type="submit" variant="contained" size="large" disabled={submitting} fullWidth>
               {submitting ? "Signing in..." : "Sign In"}
             </Button>
