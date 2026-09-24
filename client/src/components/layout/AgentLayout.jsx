@@ -19,5 +19,6 @@ const navItems = [
 ];
 
 export default function AgentLayout() {
-  return <AppShell navItems={navItems} ticketSearchPath="/agent/queue" raiseTicketPath="/agent/new-ticket" />;
+  //return <AppShell navItems={navItems} ticketSearchPath="/agent/queue" raiseTicketPath="/agent/new-ticket" />;
+    return <AppShell navItems={navItems} /* ticketSearchPath="/agent/queue" */ raiseTicketPath="/agent/new-ticket" />;
 }

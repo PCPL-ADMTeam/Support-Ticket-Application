@@ -13,7 +13,7 @@ export default function PortalLayout() {
   return (
     <AppShell
       navItems={navItems}
-      ticketSearchPath="/portal/my-tickets"
+      //ticketSearchPath="/portal/my-tickets"
       raiseTicketPath="/portal/new-ticket"
     />
   );

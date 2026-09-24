@@ -60,14 +60,14 @@ export default function TicketFilters({ filters, onChange, showAssigneeFilter, s
   return (
     <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
       <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center">
-        <TextField
+        {/* <TextField
           size="small"
           placeholder="Search title, requester, assignee..."
           value={filters.search || ""}
           onChange={set("search")}
           InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
           sx={{ minWidth: 240 }}
-        />
+        /> */}
         <TextField size="small" select label="Status" value={filters.status || ""} onChange={set("status")} sx={{ minWidth: 160 }}>
           <MenuItem value="">All</MenuItem>
           {STATUS_OPTIONS.map((s) => <MenuItem key={s} value={s}>{s.replace("_", " ")}</MenuItem>)}
