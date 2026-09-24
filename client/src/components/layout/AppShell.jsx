@@ -30,6 +30,7 @@ import { useTheme } from "@mui/material/styles";
 import { useAuth } from "../../context/AuthContext";
 import NotificationBell from "./NotificationBell";
 import ProfileDialog from "./ProfileDialog";
+import AppFooter from "./AppFooter";
 import logo from "../../assets/logo.png";
 
 import "./AppShell.css";
@@ -394,12 +395,15 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
           },
           transition:
             "width 0.25s ease-in-out",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
         <Toolbar sx={{ minHeight: `${HEADER_HEIGHT}px !important` }} />
 
         <Box
           sx={{
+            flex: 1,
             p: {
               xs: 2,
               md: 3,
@@ -408,6 +412,8 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
         >
           <Outlet />
         </Box>
+
+        <AppFooter />
       </Box>
     </Box>
   );

@@ -1,0 +1,65 @@
+# Copy this file to .env and fill in real values before running the server.
+
+NODE_ENV=development
+PORT=5000
+CLIENT_URL=http://localhost:5173
+
+# Postgres connection string used by Prisma.
+# Local (non-docker) dev: postgresql://helpdesk:helpdesk_dev_password@localhost:5432/helpdesk
+DATABASE_URL="postgresql://helpdesk:helpdesk_dev_password@127.0.0.1:5433/helpdesk"
+
+
+# JWT secrets — generate strong random values, e.g. `openssl rand -hex 32`.
+JWT_ACCESS_SECRET=replace_with_a_long_random_secret
+JWT_ACCESS_EXPIRES_IN=15m
+JWT_REFRESH_SECRET=replace_with_a_different_long_random_secret
+JWT_REFRESH_EXPIRES_IN=7d
+
+# Default admin account created by prisma/seed.js
+SEED_ADMIN_EMAIL=admin@helpdesk.local
+SEED_ADMIN_PASSWORD=Admin@12345
+
+# SMTP / email notifications (Nodemailer). For local dev, point this at
+# Mailtrap, Ethereal, or leave blank — emails are logged to the console
+# instead of sent when SMTP_HOST is empty.
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASSWORD=
+SMTP_FROM="Helpdesk <no-reply@helpdesk.local>"
+
+# CloudReady Microsoft Entra ID (Microsoft Graph) — used for the corporate
+# directory lookup (GET /users/entra-directory) and for sending ticket
+# emails via Graph instead of SMTP. Create an app registration in Entra
+# with a client-credentials secret and Application permission User.Read.All
+# (directory lookup) and Mail.Send (sending as CLOUDREADY_MAILBOX). Leave
+# all four blank to run without CloudReady — email then falls back to the
+# Helpdesk user's own `email` field and is logged via the console mailer.
+# NEVER commit real values here or in .env — rotate immediately if one leaks.
+CLOUDREADY_TENANT_ID=
+CLOUDREADY_CLIENT_ID=
+CLOUDREADY_CLIENT_SECRET=
+# The one shared mailbox Graph sends ticket emails "from" — never a
+# per-request/client-supplied address.
+CLOUDREADY_MAILBOX=
+
+# File uploads — legacy local disk fallback (still used to serve
+# attachments uploaded before the Azure Blob Storage migration; new
+# uploads go to Azure instead, see AZURE_STORAGE_* below).
+UPLOAD_DIR=uploads
+MAX_UPLOAD_SIZE_MB=10
+
+# Azure Blob Storage — where new ticket attachments are stored. The
+# container is created automatically (private, no public access) on first
+# use if it doesn't already exist. Leave all three blank to run without
+# Azure configured; attachment uploads will then fail with a clear error
+# rather than silently falling back anywhere.
+# NEVER commit real values here or in .env — rotate immediately if one leaks.
+AZURE_STORAGE_ACCOUNT_NAME=
+AZURE_STORAGE_CONNECTION_STRING=
+AZURE_STORAGE_CONTAINER_NAME=attachments
+
+# Rate limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX=300
