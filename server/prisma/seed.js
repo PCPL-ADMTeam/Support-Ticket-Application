@@ -5,7 +5,6 @@
 require("dotenv").config();
 const bcrypt = require("bcryptjs");
 const { PrismaClient } = require("@prisma/client");
-const { formatDepartmentTicketNumber } = require("../src/utils/ticketNumber");
 const { emailTemplateDefaults } = require("./emailTemplateDefaults");
 
 const prisma = new PrismaClient();
@@ -32,24 +31,10 @@ async function main() {
     upsertRole("USER", "End User"),
   ]);
 
-  const adminEmail = process.env.SEED_ADMIN_EMAIL || "admin@helpdesk.local";
+  const adminEmail = process.env.SEED_ADMIN_EMAIL || "helpdesk@powercen.com";
   const adminPassword = process.env.SEED_ADMIN_PASSWORD || "Admin@12345";
   const admin = await upsertUser({ name: "System Administrator", email: adminEmail, password: adminPassword, roleId: adminRole.id });
 
-  const agent1 = await upsertUser({ name: "Alex Agent", email: "alex.agent@helpdesk.local", password: "Agent@12345", roleId: agentRole.id });
-  const agent2 = await upsertUser({ name: "Sam Support", email: "sam.support@helpdesk.local", password: "Agent@12345", roleId: agentRole.id });
-  const endUser1 = await upsertUser({ name: "Jamie User", email: "jamie.user@helpdesk.local", password: "User@12345", roleId: userRole.id });
-  const endUser2 = await upsertUser({ name: "Riley Requester", email: "riley.requester@helpdesk.local", password: "User@12345", roleId: userRole.id });
-
-  const team = await prisma.team.upsert({
-    where: { name: "Service Desk" },
-    update: {},
-    create: {
-      name: "Service Desk",
-      description: "Tier-1 IT support team",
-      members: { create: [{ userId: agent1.id }, { userId: agent2.id }] },
-    },
-  });
 
   const categoryDefs = [
     { name: "Hardware", children: ["Laptop", "Printer", "Peripherals"] },
@@ -205,60 +190,7 @@ async function main() {
     });
   }
 
-  // Give the demo end users/agents a department so "Raise a Ticket" has a
-  // populated From Department right away.
-  await prisma.user.update({ where: { id: endUser1.id }, data: { departmentId: departments.Hardware.id } });
-  await prisma.user.update({ where: { id: endUser2.id }, data: { departmentId: departments.HR.id } });
-  await prisma.user.update({ where: { id: agent1.id }, data: { departmentId: departments.Hardware.id, isManager: true } });
-  await prisma.user.update({ where: { id: agent2.id }, data: { departmentId: departments.Hardware.id } });
 
-  const existingTickets = await prisma.ticket.count();
-  if (existingTickets === 0) {
-    console.log("Creating sample tickets...");
-    const sampleTickets = [
-      { title: "Laptop won't power on", description: "My laptop screen stays black even when plugged in.", category: "Laptop", priority: "High", status: "OPEN", requester: endUser1, assignee: agent1 },
-      { title: "Need VPN access from home", description: "Requesting VPN client installation for remote work.", category: "VPN", priority: "Medium", status: "IN_PROGRESS", requester: endUser2, assignee: agent2 },
-      { title: "Printer on 3rd floor jamming", description: "Paper jams on every 5th print job.", category: "Printer", priority: "Low", status: "RESOLVED", requester: endUser1, assignee: agent1 },
-      { title: "Production app throwing 500 errors", description: "Customers cannot check out; urgent.", category: "Bug Report", priority: "Critical", status: "OPEN", requester: endUser2, assignee: agent2 },
-      { title: "New hire account setup", description: "Please provision an account for the new analyst starting Monday.", category: "New Account", priority: "Medium", status: "CLOSED", requester: endUser1, assignee: agent1 },
-    ];
-
-    for (const t of sampleTickets) {
-      const category = await prisma.category.findFirst({ where: { name: t.category } });
-      const priority = priorities[t.priority];
-      // Same department-wise numbering path ticket.service.js#createTicket
-      // uses — one authoritative implementation, no separate seed-only
-      // formatter. Sample tickets are routed to Hardware (matching their
-      // assignees, who are Hardware staff).
-      const hardwareDept = await prisma.department.update({
-        where: { id: departments.Hardware.id },
-        data: { ticketSequence: { increment: 1 } },
-        select: { ticketPrefix: true, ticketSequence: true },
-      });
-      const created = await prisma.ticket.create({
-        data: {
-          ticketNumber: formatDepartmentTicketNumber(hardwareDept.ticketPrefix, hardwareDept.ticketSequence),
-          title: t.title,
-          description: t.description,
-          categoryId: category.id,
-          priorityId: priority.id,
-          requesterId: t.requester.id,
-          assigneeId: t.assignee.id,
-          teamId: team.id,
-          fromDepartmentId: departments.Hardware.id,
-          toDepartmentId: departments.Hardware.id,
-          status: t.status,
-          dueAt: new Date(Date.now() + 24 * 3600 * 1000),
-          resolvedAt: ["RESOLVED", "CLOSED"].includes(t.status) ? new Date() : null,
-          closedAt: t.status === "CLOSED" ? new Date() : null,
-        },
-      });
-      await prisma.ticketHistory.create({ data: { ticketId: created.id, userId: admin.id, action: "CREATED" } });
-      await prisma.ticketComment.create({
-        data: { ticketId: created.id, authorId: t.requester.id, body: "Please look into this as soon as possible.", isInternal: false },
-      });
-    }
-  }
 
   // Default database-driven email templates — one per ticket lifecycle
   // event key that ticket.service.js/notification.service.js emit. This is
@@ -277,9 +209,6 @@ async function main() {
 
   console.log("Seed complete.");
   console.log(`  Admin login:           ${adminEmail} / ${adminPassword}`);
-  console.log(`  Agent login:           ${agent1.email} / Agent@12345 (also flagged as Hardware department manager)`);
-  console.log(`  Agent login:           ${agent2.email} / Agent@12345`);
-  console.log(`  User login:            ${endUser1.email} / User@12345`);
 }
 
 main()
