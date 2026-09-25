@@ -223,7 +223,8 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
               component="img"
               src={logo}
               alt="SOLVORA"
-              sx={{ width: 58, height: 58, borderRadius: "50%", flexShrink: 0, display: "block" }}
+              sx={{ width: 112, height: 100
+                , borderRadius: "50%", flexShrink: 0, display: "block" }}
             />
             <Typography variant="h4" fontWeight={700} noWrap>
               SOLVORA
