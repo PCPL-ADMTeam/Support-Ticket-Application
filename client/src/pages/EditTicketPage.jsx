@@ -10,7 +10,7 @@ import TicketForm from "../components/tickets/TicketForm";
 // Shared, role-agnostic page (like TicketDetailPage) — reachable by
 // whoever raised the ticket. Ownership, not role, is what actually gates
 // this: ticket.service.js#updateTicket's canRequesterEditDetails is
-// `isOwner && status not RESOLVED/CLOSED`, independent of ADMIN/AGENT/USER.
+// `isOwner && status not RESOLVED/CLOSED`, independent of role.
 // This page mirrors that same rule for a fast, friendly redirect — the
 // backend re-checks it on every PATCH regardless of what this page shows.
 export default function EditTicketPage() {

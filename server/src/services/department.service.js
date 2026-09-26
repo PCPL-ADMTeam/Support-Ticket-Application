@@ -1,6 +1,7 @@
 const prisma = require("../config/prisma");
 const ApiError = require("../utils/ApiError");
 const { recordAudit } = require("../utils/audit");
+const { MAX_TEAMLEADS_PER_DEPARTMENT } = require("../config/constants");
 
 const departmentIssuesSelect = {
   where: { isActive: true },
@@ -8,20 +9,23 @@ const departmentIssuesSelect = {
   orderBy: [{ isOther: "asc" }, { name: "asc" }],
 };
 
-// Department = the organizational group now (one AGENT manager + its USER
-// employees via User.departmentId — no separate Team/TeamMember layer).
-// Prisma can't select the same `users` relation twice with different
-// filters in one query, so we fetch every department member once and split
-// them into managers vs employees here instead.
+// Department = the organizational group (multiple MANAGERs + up to
+// MAX_TEAMLEADS_PER_DEPARTMENT TEAMLEADs via UserDepartmentAccess + its
+// EMPLOYEE staff via User.departmentId — no separate Team/TeamMember
+// layer). `managers`/`teamLeads` replace the old single `managers` (Agent)
+// field: every ACTIVE user of the matching role with a UserDepartmentAccess
+// row for this department — never derived from the legacy
+// User.isManager/departmentId fields, which are kept only for backward
+// compatibility and are no longer read here.
 function toDepartmentShape(department) {
-  const { users, ...rest } = department;
+  const { users, userAccess, ...rest } = department;
+  const activeAccess = userAccess.filter((a) => a.user.isActive);
   return {
     ...rest,
-    // Mirrors ticket.service#createTicket's manager lookup (AGENT +
-    // isManager + isActive) — a deactivated agent must not still appear as
-    // "the" manager here, since routing would already treat them as gone.
-    managers: users.filter((u) => u.isManager && u.isActive),
-    employees: users.filter((u) => u.role.name === "USER"),
+    managers: activeAccess.filter((a) => a.user.role.name === "MANAGER").map((a) => a.user),
+    teamLeads: activeAccess.filter((a) => a.user.role.name === "TEAMLEAD").map((a) => a.user),
+    maxTeamLeads: MAX_TEAMLEADS_PER_DEPARTMENT,
+    employees: users.filter((u) => u.role.name === "EMPLOYEE"),
   };
 }
 
@@ -39,6 +43,10 @@ async function listDepartments() {
       users: {
         select: { id: true, name: true, email: true, isActive: true, isManager: true, role: { select: { name: true } } },
         orderBy: { name: "asc" },
+      },
+      userAccess: {
+        select: { user: { select: { id: true, name: true, email: true, isActive: true, role: { select: { name: true } } } } },
+        orderBy: { user: { name: "asc" } },
       },
       issues: departmentIssuesSelect,
     },

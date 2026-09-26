@@ -16,6 +16,7 @@ import AttachFileIcon from "@mui/icons-material/AttachFile";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import CloseIcon from "@mui/icons-material/Close";
 import FlagIcon from "@mui/icons-material/Flag";
+import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 
 import ReactQuill from "react-quill";
 import "react-quill/dist/quill.snow.css";
@@ -24,6 +25,7 @@ import { useAuth } from "../../context/AuthContext";
 import { departmentsApi } from "../../api/departments";
 import { prioritiesApi } from "../../api/catalog";
 import AttachmentList from "./AttachmentList";
+import SearchableUserSelector from "../common/SearchableUserSelector";
 
 const MAX_ATTACHMENT_MB = 10;
 
@@ -152,6 +154,16 @@ export default function TicketForm({
   const [errors, setErrors] = useState({});
 
   /* =========================================================
+     CUSTOM CC (create mode only — the ticket's CC list is fixed at
+     creation time and there is no post-creation CC-editing UI, see
+     ticket.service.js#createTicket / TicketCC). Search/debounce/loading are
+     all handled by the shared SearchableUserSelector below.
+  ========================================================= */
+
+  const [ccOpen, setCcOpen] = useState(false);
+  const [ccSelected, setCcSelected] = useState([]);
+
+  /* =========================================================
      SELECTED VALUES
   ========================================================= */
 
@@ -161,14 +173,6 @@ export default function TicketForm({
         (d) => d.id === form.toDepartmentId
       ) || null,
     [departments, form.toDepartmentId]
-  );
-
-  // The manager is never chosen by the requester — it's whichever AGENT the
-  // backend has flagged as this department's manager (Admin-configured).
-  // There is at most one per department in practice; take the first.
-  const departmentManager = useMemo(
-    () => selectedDepartment?.managers?.[0] || null,
-    [selectedDepartment]
   );
 
   const selectedIssue = useMemo(
@@ -438,6 +442,10 @@ export default function TicketForm({
       );
     }
 
+    ccSelected.forEach((u) => {
+      formData.append("ccUserIds", u.id);
+    });
+
     attachments.forEach((file) => {
       formData.append("attachments", file);
     });
@@ -511,7 +519,12 @@ export default function TicketForm({
         }}
       >
         <Stack spacing={3}>
-          {!user.department ? (
+          {/* A home department is required for an EMPLOYEE (their normal
+              department membership) but not for a MANAGER/TEAMLEAD, who can
+              raise a ticket without one — their own "From Department"
+              simply has nothing distinct to show (see the read-only field
+              below), unlike an Employee, who is always tied to one. */}
+          {!user.department && user.role.name === "EMPLOYEE" ? (
             <Alert severity="warning">
               Your account has no department assigned,
               so you can't raise a ticket yet. Contact
@@ -532,8 +545,8 @@ export default function TicketForm({
                 <Typography
                   sx={sectionSubtitleSx}
                 >
-                  Select the department, manager, issue
-                  and priority for your request.
+                  Select the department, issue and
+                  priority for your request.
                 </Typography>
               </Box>
 
@@ -642,7 +655,7 @@ export default function TicketForm({
 
                   <TextField
                     fullWidth
-                    value={user.department.name}
+                    value={user.department?.name || "—"}
                     helperText="Your department"
                     size="small"
                     InputProps={{
@@ -699,35 +712,51 @@ export default function TicketForm({
               </Stack>
 
               {/* =================================================
-                  MANAGER (auto-determined from the selected
-                  department — never chosen by the requester)
+                  CUSTOM CC (create mode only)
               ================================================= */}
 
-              <Box>
-                <Typography sx={fieldLabelSx}>
-                  Manager
-                </Typography>
+              {!isEdit && (
+                <Box>
+                  <Typography sx={fieldLabelSx}>
+                    Custom CC (optional)
+                  </Typography>
 
-                <TextField
-                  fullWidth
-                  size="small"
-                  value={
-                    departmentManager?.name || ""
-                  }
-                  placeholder={
-                    !selectedDepartment
-                      ? "Select department first"
-                      : "No manager assigned"
-                  }
-                  helperText={
-                    selectedDepartment &&
-                    !departmentManager
-                      ? "This department has no manager assigned yet — an admin will need to set one, but you can still raise the ticket."
-                      : "Automatically set to this department's manager"
-                  }
-                  InputProps={{ readOnly: true }}
-                />
-              </Box>
+                  {!ccOpen ? (
+                    <Button
+                      variant="outlined"
+                      startIcon={<PersonAddAlt1Icon />}
+                      onClick={() => setCcOpen(true)}
+                      sx={{
+                        textTransform: "none",
+                        borderRadius: 2,
+                        px: 2,
+                        py: 1,
+                      }}
+                    >
+                      Custom CC
+                    </Button>
+                  ) : (
+                    <SearchableUserSelector
+                      multiple
+                      placeholder="Search employee name..."
+                      excludeIds={[user.id]}
+                      value={ccSelected}
+                      onChange={setCcSelected}
+                      autoFocus
+                    />
+                  )}
+
+                  <Typography
+                    sx={{
+                      mt: 0.75,
+                      fontSize: 12,
+                      color: "text.secondary",
+                    }}
+                  >
+                    These people will be CC'd on all email notifications for this ticket.
+                  </Typography>
+                </Box>
+              )}
 
               {/* =================================================
                   ISSUE

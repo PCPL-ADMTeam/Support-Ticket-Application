@@ -15,10 +15,14 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 // Kept as a table (rather than a hardcoded enum) so an Admin could in principle
-// manage roles later; seed.js guarantees ADMIN / AGENT / USER always exist.
+// manage roles later; seed.js guarantees ADMIN / MANAGER / TEAMLEAD / EMPLOYEE
+// always exist. Historical note: this used to be ADMIN / AGENT / USER — AGENT
+// was renamed to TEAMLEAD and USER to EMPLOYEE, and MANAGER was added, via a
+// data-only migration (see the migration that renames these role rows) that
+// never touched any user's roleId — only the Role row's own name/label.
 model Role {
   id        String   @id @default(cuid())
-  name      String   @unique // ADMIN | AGENT | USER
+  name      String   @unique // ADMIN | MANAGER | TEAMLEAD | EMPLOYEE
   label     String
   createdAt DateTime @default(now())
 
@@ -55,6 +59,10 @@ model User {
   teamMemberships   TeamMember[]
   requestedTickets  Ticket[]          @relation("TicketRequester")
   assignedTickets   Ticket[]          @relation("TicketAssignee")
+  // Kept for backward compatibility/history only — Ticket.managerId is no
+  // longer the source of truth for department-management authorization (see
+  // UserDepartmentAccess below); it still records which TEAMLEAD/MANAGER a
+  // ticket was originally routed under at creation/transfer time.
   managedTickets    Ticket[]          @relation("TicketManager")
   comments          TicketComment[]
   attachmentsUploaded TicketAttachment[]
@@ -63,10 +71,52 @@ model User {
   auditLogs         AuditLog[]
   refreshTokens     RefreshToken[]
   passwordResetTokens PasswordResetToken[]
+  // Department-management access — the source of truth for "which
+  // departments can this MANAGER/TEAMLEAD manage." A MANAGER may hold
+  // several of these rows (multi-department); a TEAMLEAD holds exactly one
+  // (enforced in userDepartmentAccess.service.js, not at the DB level, same
+  // as the MAX_TEAMLEADS_PER_DEPARTMENT limit). Replaces the old single
+  // isManager+departmentId model for authorization purposes; isManager and
+  // departmentId remain on this model unchanged for backward compatibility.
+  departmentAccess        UserDepartmentAccess[] @relation("UserDepartmentAccessUser")
+  grantedDepartmentAccess UserDepartmentAccess[] @relation("UserDepartmentAccessGrantedBy")
+  ticketCCs               TicketCC[]              @relation("TicketCCUser")
+  addedTicketCCs          TicketCC[]              @relation("TicketCCAddedBy")
 
   @@index([roleId])
   @@index([departmentId])
   @@map("users")
+}
+
+// The role-neutral source of truth for MANAGER/TEAMLEAD <-> Department
+// authorization (see ticket.service.js's scope/authorization functions).
+// Originally modeled as AgentDepartmentAccess (single AGENT role); renamed
+// and generalized to cover both management roles once MANAGER was added
+// alongside the AGENT->TEAMLEAD rename (see the migration that renames this
+// table/column — existing rows and their data are preserved unchanged, only
+// renamed). A MANAGER may have access to several departments; a TEAMLEAD
+// holds exactly one row (app-enforced, see userDepartmentAccess.service.js).
+// One department may have multiple MANAGERs (no cap) and up to
+// MAX_TEAMLEADS_PER_DEPARTMENT TEAMLEADs (see server/src/config/constants.js).
+// Deliberately NOT modeled as a single managerId field — that was the old,
+// replaced model. User.departmentId and User.isManager are left untouched
+// elsewhere in this schema and are no longer read for department-management
+// authorization decisions.
+model UserDepartmentAccess {
+  id           String   @id @default(cuid())
+  userId       String
+  departmentId String
+  createdAt    DateTime @default(now())
+  createdBy    String?
+
+  user       User       @relation("UserDepartmentAccessUser", fields: [userId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  grantedBy  User?      @relation("UserDepartmentAccessGrantedBy", fields: [createdBy], references: [id])
+
+  @@unique([userId, departmentId])
+  @@index([userId])
+  @@index([departmentId])
+  @@map("user_department_access")
 }
 
 model RefreshToken {
@@ -159,6 +209,7 @@ model Department {
 
   ticketsFrom Ticket[] @relation("TicketFromDepartment")
   ticketsTo   Ticket[] @relation("TicketToDepartment")
+  userAccess  UserDepartmentAccess[]
 
   @@map("departments")
 }
@@ -299,6 +350,10 @@ model Ticket {
   attachments TicketAttachment[]
   history     TicketHistory[]
   notifications Notification[]
+  // Custom CC users selected by the requester at ticket-creation time.
+  // Fixed for the life of the ticket — a later department transfer does NOT
+  // change this list (see ticket.service.js#transferDepartment).
+  ccUsers     TicketCC[]
 
   @@index([status])
   @@index([priorityId])
@@ -355,6 +410,27 @@ model TicketAttachment {
 
   @@index([ticketId])
   @@map("ticket_attachments")
+}
+
+// Custom CC recipients the requester chose while raising the ticket (see
+// TicketForm.jsx's Custom CC search/chip UI). CC'd on every subsequent
+// email event for this ticket (see the central recipient builder,
+// utils/recipientBuilder.js) — never changes on department transfer.
+model TicketCC {
+  id        String   @id @default(cuid())
+  ticketId  String
+  userId    String
+  addedBy   String?
+  createdAt DateTime @default(now())
+
+  ticket      Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user        User   @relation("TicketCCUser", fields: [userId], references: [id])
+  addedByUser User?  @relation("TicketCCAddedBy", fields: [addedBy], references: [id])
+
+  @@unique([ticketId, userId])
+  @@index([ticketId])
+  @@index([userId])
+  @@map("ticket_cc")
 }
 
 // Full activity/audit trail scoped to a single ticket (status changes,

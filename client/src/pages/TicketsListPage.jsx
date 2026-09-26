@@ -22,7 +22,6 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import { format } from "date-fns";
 import { ticketsApi } from "../api/tickets";
-import { usersApi } from "../api/users";
 import { prioritiesApi } from "../api/catalog";
 import StatusBadge from "../components/common/StatusBadge";
 import PriorityBadge from "../components/common/PriorityBadge";
@@ -75,12 +74,16 @@ export default function TicketsListPage({
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState([]);
-  const [agents, setAgents] = useState([]);
   const [priorities, setPriorities] = useState([]);
 
+  // Bulk actions are Admin-only (see AllTicketsPage.jsx), and per the final
+  // role rules Admin never assigns tickets — so this only ever needs
+  // Status/Priority options, never an "Assign to" one (which would 403
+  // against GET /users/assignable-agents, now Manager/Team-Lead-only, and
+  // against the bulk endpoint itself, which rejects an assigneeId from an
+  // Admin caller).
   useEffect(() => {
     if (!showBulkActions) return;
-    usersApi.assignableAgents().then(({ data }) => setAgents(data.data));
     prioritiesApi.list().then(({ data }) => setPriorities(data.data));
   }, [showBulkActions]);
 
@@ -163,7 +166,6 @@ export default function TicketsListPage({
             >
               <MenuItem value="status">Status</MenuItem>
               <MenuItem value="priorityId">Priority</MenuItem>
-              <MenuItem value="assigneeId">Assign to</MenuItem>
             </TextField>
 
             <TextField size="small" select label="Value" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} sx={{ minWidth: 180 }}>
@@ -174,7 +176,6 @@ export default function TicketsListPage({
                 <MenuItem key="CLOSED" value="CLOSED">Closed</MenuItem>,
               ]}
               {bulkField === "priorityId" && priorities.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
-              {bulkField === "assigneeId" && agents.map((a) => <MenuItem key={a.id} value={a.id}>{a.name}</MenuItem>)}
             </TextField>
 
             <Button variant="contained" onClick={handleBulkApply} disabled={!bulkValue}>Apply</Button>

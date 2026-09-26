@@ -7,7 +7,8 @@ const createTicketValidator = [
   body("priorityId").notEmpty().withMessage("Priority is required"),
   body("toDepartmentId").notEmpty().withMessage("Department is required"),
   // managerId is never taken from the client — it's derived server-side from
-  // the selected department's AGENT manager (see ticket.service#createTicket).
+  // the selected department's active Team Lead/Manager (see
+  // ticket.service#createTicket).
   body("issueId").notEmpty().withMessage("Issue is required"),
   body("customIssueText").optional({ nullable: true }).isString(),
   body("assigneeId").optional({ nullable: true }).isString(),

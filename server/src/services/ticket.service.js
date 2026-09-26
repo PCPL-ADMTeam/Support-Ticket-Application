@@ -7,8 +7,8 @@ const { formatDepartmentTicketNumber } = require("../utils/ticketNumber");
 const { recordAudit } = require("../utils/audit");
 const notificationService = require("./notification.service");
 const { sanitizeRichText } = require("../utils/sanitize");
-const { findActiveDepartmentManager } = require("../utils/departmentManager");
-const { resolveCommentRecipients } = require("../utils/commentRecipients");
+const userDepartmentAccessService = require("./userDepartmentAccess.service");
+const { buildCreatedRecipients, buildStandardRecipients } = require("../utils/recipientBuilder");
 const blobStorageService = require("./blobStorage.service");
 const { uploadRoot } = require("../config/multer");
 
@@ -52,6 +52,25 @@ const ticketListInclude = {
 
 const ticketDetailInclude = {
   ...ticketListInclude,
+  // The ticket's own department — with its CURRENT active management users
+  // (both roles), not the single backward-compat `manager` above (which is
+  // only ever set once at creation/transfer time and never updated if
+  // access later changes) — this is what the ticket detail page's
+  // "Managers" / "Team Leads" rows actually show.
+  toDepartment: {
+    select: {
+      id: true,
+      name: true,
+      userAccess: {
+        where: { user: { isActive: true } },
+        select: { user: { select: { id: true, name: true, email: true, role: { select: { name: true } } } } },
+      },
+    },
+  },
+  // The ticket's Custom CC list — fixed at creation time (see createTicket)
+  // and unaffected by later department transfers; surfaced here so the
+  // detail page can show who else is being kept in the loop.
+  ccUsers: { select: { user: { select: { id: true, name: true, email: true } } } },
   comments: {
     orderBy: { createdAt: "asc" },
     include: {
@@ -66,114 +85,183 @@ const ticketDetailInclude = {
   },
 };
 
+// Both department-management roles ("MANAGER" and "TEAMLEAD") authorize
+// identically against UserDepartmentAccess — the only difference between
+// them is cardinality (a MANAGER may hold several rows, a TEAMLEAD exactly
+// one) and email TO/CC priority (see utils/recipientBuilder.js), never the
+// authorization shape itself. ADMIN and EMPLOYEE are never "management."
+function isManagementRole(user) {
+  return user.role.name === "MANAGER" || user.role.name === "TEAMLEAD";
+}
+
+// Every department this MANAGER/TEAMLEAD currently has a UserDepartmentAccess
+// row for. Fetched ONCE per request by each top-level service function below
+// and threaded through as a plain id array, rather than making
+// scopeWhereForUser/assertCanView themselves async — those are called
+// multiple times in some paths and are otherwise pure/synchronous.
+// User.departmentId and User.isManager are never read for this decision
+// anymore; they remain on User only for backward compatibility/history.
+async function resolveUserDepartmentIds(user) {
+  if (!isManagementRole(user)) return [];
+  return userDepartmentAccessService.getUserDepartmentIds(user.id);
+}
+
 // Row-level authorization: what tickets can this user even see/act on.
-// ADMIN -> everything. AGENT (department manager) -> every ticket routed to
-// their department. USER -> tickets they raised, or that they've been
-// assigned to work on. Used both for list filtering and single-ticket checks.
-function scopeWhereForUser(user) {
+// ADMIN -> everything (view only — see the operational checks further down
+// for why ADMIN never reaches assign/reassign/transfer). MANAGER/TEAMLEAD ->
+// every ticket routed to ANY department they currently have
+// UserDepartmentAccess to (a TEAMLEAD's list always has exactly one entry; a
+// MANAGER's may have several — this check is identical either way). EMPLOYEE
+// -> tickets they raised, or that they've been assigned to work on. Used
+// both for list filtering and single-ticket checks.
+function scopeWhereForUser(user, userDepartmentIds = []) {
   if (user.role.name === "ADMIN") return {};
-  if (user.role.name === "AGENT") {
-    // No department => no tickets, rather than matching everything.
-    return user.departmentId ? { toDepartmentId: user.departmentId } : { id: "" };
+  if (isManagementRole(user)) {
+    // No accessible department => no tickets, rather than matching everything.
+    return userDepartmentIds.length ? { toDepartmentId: { in: userDepartmentIds } } : { id: "" };
   }
   return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
 }
 
-function assertCanView(user, ticket) {
+function assertCanView(user, ticket, userDepartmentIds = []) {
   if (user.role.name === "ADMIN") return;
-  if (user.role.name === "AGENT") {
-    if (user.departmentId && ticket.toDepartmentId === user.departmentId) return;
-    throw new ApiError(403, "This ticket does not belong to your department");
+  if (isManagementRole(user)) {
+    if (ticket.toDepartmentId && userDepartmentIds.includes(ticket.toDepartmentId)) return;
+    throw new ApiError(403, "You do not have access to this ticket's department");
   }
   if (ticket.requesterId === user.id || ticket.assigneeId === user.id) return;
   throw new ApiError(403, "You can only view tickets you raised or are assigned to");
 }
 
-// Read-only variant of assertCanView, used ONLY by getTicketById. An AGENT
-// who personally raised a ticket must still be able to open it after it's
-// routed to (or transferred into) a different department — being the
-// requester is sufficient to look at your own request's status/history,
-// mirroring the USER-role rule just below. Deliberately NOT folded into
-// assertCanView itself: that function also gates mutating actions
-// (comments/attachments/status changes/transfer), which stay exactly
-// department-scoped for an AGENT even on a ticket they raised elsewhere —
-// acting on another department's ticket is a materially different,
-// larger permission than merely viewing your own request's progress.
-function assertCanViewForRead(user, ticket) {
-  if (user.role.name === "AGENT" && ticket.requesterId === user.id) return;
-  assertCanView(user, ticket);
+// Read-only variant of assertCanView, used ONLY by getTicketById. A MANAGER
+// or TEAMLEAD who personally raised a ticket must still be able to open it
+// after it's routed to (or transferred into) a department they don't have
+// access to — being the requester is sufficient to look at your own
+// request's status/history, mirroring the EMPLOYEE-role rule just below.
+// Deliberately NOT folded into assertCanView itself: that function also
+// gates mutating actions (comments/attachments/status changes/transfer),
+// which stay exactly access-scoped even on a ticket raised elsewhere —
+// acting on a department you don't manage is a materially different, larger
+// permission than merely viewing your own request's progress, and this
+// exception grants ONLY that narrower read access, never department-
+// management rights over the ticket's actual department.
+function assertCanViewForRead(user, ticket, userDepartmentIds = []) {
+  if (isManagementRole(user) && ticket.requesterId === user.id) return;
+  assertCanView(user, ticket, userDepartmentIds);
 }
 
 // Internal (staff-only) notes are stripped out before a response reaches
-// anyone who isn't actually staff FOR THIS TICKET's own department — a
-// USER-role requester (unless also the assignee), or an AGENT viewing
-// solely via the requester exception above (assertCanViewForRead) rather
-// than as this ticket's own department manager. An AGENT who IS this
-// ticket's department manager, or the person actually assigned to work
-// it, still sees everything, exactly as before.
+// anyone who isn't actually staff FOR THIS TICKET's own department — an
+// EMPLOYEE requester (unless also the assignee), or a MANAGER/TEAMLEAD
+// viewing solely via the requester exception above (assertCanViewForRead)
+// rather than as this ticket's own department management user. A
+// MANAGER/TEAMLEAD who DOES manage this ticket's department, or the person
+// actually assigned to work it, still sees everything, exactly as before.
 // Shared by scrubInternalComments (what the comment list itself shows) and
 // streamAttachment (what a direct-by-id download request may return) so
 // both enforce exactly the same "who can see an internal note" rule — an
 // attachment on a hidden internal note must never be independently
 // downloadable just because its own id was guessed/known.
-function canViewInternalNotes(user, ticket) {
+function canViewInternalNotes(user, ticket, userDepartmentIds = []) {
   const isAssignee = ticket.assigneeId === user.id;
-  const isDepartmentStaff = user.role.name === "ADMIN" || (user.role.name === "AGENT" && ticket.toDepartmentId === user.departmentId);
+  const isDepartmentStaff = user.role.name === "ADMIN" || (isManagementRole(user) && userDepartmentIds.includes(ticket.toDepartmentId));
   return isDepartmentStaff || isAssignee;
 }
 
-function scrubInternalComments(ticket, user) {
-  if (!canViewInternalNotes(user, ticket)) {
+function scrubInternalComments(ticket, user, userDepartmentIds = []) {
+  if (!canViewInternalNotes(user, ticket, userDepartmentIds)) {
     return { ...ticket, comments: ticket.comments.filter((c) => !c.isInternal) };
   }
   return ticket;
 }
 
-// A ticket's assignee must be an active USER employee belonging to the
-// ticket's own (to-)department — never an ADMIN, never an AGENT manager,
-// never someone from an unrelated department.
+// A ticket's assignee must be an active EMPLOYEE belonging to the ticket's
+// own (to-)department — never an ADMIN, never a MANAGER, never a TEAMLEAD
+// (Managers/Team Leads manage tickets, they are never themselves a normal
+// assignee), never someone from an unrelated department.
 async function assertValidAssignee(assigneeId, departmentId) {
   if (!assigneeId) return;
   const assignee = await prisma.user.findUnique({ where: { id: assigneeId }, include: { role: true } });
-  if (!assignee || !assignee.isActive || assignee.role.name !== "USER" || assignee.departmentId !== departmentId) {
+  if (!assignee || !assignee.isActive || assignee.role.name !== "EMPLOYEE" || assignee.departmentId !== departmentId) {
     throw new ApiError(400, "Invalid assignee — must be an active employee in this ticket's department");
   }
 }
 
-// A ticket's manager must be an active AGENT department-manager belonging
-// to the ticket's own destination department — mirrors assertValidAssignee
-// above, just for the manager/AGENT role instead of the assignee/USER role,
-// and mirrors the exact criteria createTicket's own manager lookup already
-// uses (role AGENT, isManager true, isActive true, departmentId match).
-// managerId is normally always server-derived at creation time and is
-// never client-chosen; this is only reached when an ADMIN explicitly
-// overrides it via PATCH (see updateTicket), so a department with no
-// legitimate manager simply has no valid managerId to set — there is no
-// separate fallback to invent here.
+// Custom CC (TicketCC) — validated server-side regardless of what the
+// Raise Ticket UI's search/picker already filtered client-side. Returns
+// the deduped, validated id list; throws on the first id that isn't a
+// real, active user, rather than silently dropping it (this is direct user
+// input at ticket-creation time, not an internally-derived recipient list
+// — unlike notification.service.js's CC resolution, which DOES drop
+// unreachable addresses silently, this is the boundary that must give the
+// caller a clear error instead).
+// Raise Ticket submits as multipart/form-data (it carries file uploads), so
+// a repeated `ccUserIds` field only becomes a real array once there are 2+
+// entries (see the `append-field` package multer uses internally) — a
+// single selected CC user instead arrives as one bare string, and a JSON
+// client could also reasonably send a JSON-encoded array string. This
+// normalizes all three shapes before assertValidCcUserIds ever sees them.
+function normalizeCcUserIds(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [raw];
+  } catch {
+    return [raw];
+  }
+}
+
+async function assertValidCcUserIds(ccUserIds) {
+  const uniqueIds = [...new Set((ccUserIds || []).filter(Boolean))];
+  if (!uniqueIds.length) return [];
+  const users = await prisma.user.findMany({ where: { id: { in: uniqueIds } }, select: { id: true, isActive: true } });
+  const found = new Map(users.map((u) => [u.id, u]));
+  for (const id of uniqueIds) {
+    const foundUser = found.get(id);
+    if (!foundUser || !foundUser.isActive) {
+      throw new ApiError(400, "One or more selected CC users are invalid or inactive.");
+    }
+  }
+  return uniqueIds;
+}
+
+// Ticket.managerId is kept only for backward compatibility/history (see
+// schema.prisma) — it is no longer the source of truth for department
+// authorization, so a legitimate value here now means "an active MANAGER or
+// TEAMLEAD with UserDepartmentAccess to this ticket's destination
+// department," not the old single isManager+departmentId check. managerId
+// is normally always server-derived at creation/transfer time and never
+// client-chosen; this is only reached when an ADMIN explicitly overrides it
+// via PATCH (see updateTicket) — a pre-existing, explicit Admin data-
+// correction feature, not a new "assign" action.
 async function assertValidManager(managerId, departmentId) {
   if (!managerId) return;
   const manager = await prisma.user.findUnique({ where: { id: managerId }, include: { role: true } });
-  if (!manager || !manager.isActive || manager.role.name !== "AGENT" || !manager.isManager || manager.departmentId !== departmentId) {
-    throw new ApiError(400, "Invalid manager — must be an active department manager (AGENT) for this ticket's department");
+  if (!manager || !manager.isActive || !isManagementRole(manager)) {
+    throw new ApiError(400, "Invalid manager — must be an active Manager or Team Lead");
+  }
+  if (!(await userDepartmentAccessService.hasAccess(managerId, departmentId))) {
+    throw new ApiError(400, "Invalid manager — this user does not have access to this ticket's department");
   }
 }
 
 // Who may transfer a ticket to a different department — a deliberately
-// separate check from updateTicket's isManagerOrAdmin: an ADMIN (who
-// otherwise manages every ticket) is explicitly EXCLUDED from this specific
-// action per the department-transfer business rule, and a USER may transfer
+// separate check from updateTicket's staff checks: an ADMIN (who otherwise
+// may VIEW every ticket) is explicitly EXCLUDED from this action per the
+// final role rules ("Admin cannot transfer"), and an EMPLOYEE may transfer
 // only while they are the ticket's current assignee — not merely its
-// requester, and not any USER in the department.
-function assertCanTransferDepartment(user, ticket) {
+// requester, and not any EMPLOYEE in the department.
+function assertCanTransferDepartment(user, ticket, userDepartmentIds = []) {
   if (user.role.name === "ADMIN") {
     throw new ApiError(403, "Administrators cannot transfer a ticket's department.");
   }
-  if (user.role.name === "AGENT") {
-    if (user.departmentId && ticket.toDepartmentId === user.departmentId) return;
-    throw new ApiError(403, "You can only transfer tickets belonging to your own department.");
+  if (isManagementRole(user)) {
+    if (userDepartmentIds.includes(ticket.toDepartmentId)) return;
+    throw new ApiError(403, "You can only transfer tickets belonging to a department you have access to.");
   }
   if (ticket.assigneeId === user.id) return;
-  throw new ApiError(403, "Only the department manager or the employee currently assigned to this ticket can transfer it.");
+  throw new ApiError(403, "Only an authorized department Manager/Team Lead or the employee currently assigned to this ticket can transfer it.");
 }
 
 async function recordHistory(tx, { ticketId, userId, action, fieldName, oldValue, newValue }) {
@@ -192,53 +280,57 @@ async function computeDueAt(priorityId, from = new Date()) {
 // own — requesterId/assigneeId always equals the authenticated caller's
 // own id, server-derived, never client-supplied — so they REPLACE the
 // normal role-based scopeWhereForUser rather than being ANDed with it.
-// This matters specifically for AGENT: scopeWhereForUser restricts an
-// AGENT to their own department, but "tickets I raised" (the Agent
-// dashboard/portal's "My Tickets" view) must include tickets raised to
-// OTHER departments too — ANDing the two would incorrectly hide those.
-// For ADMIN/USER this produces the exact same result as the old AND-based
-// version: ADMIN's scopeWhereForUser is unrestricted, and a USER's own
-// requesterId/assigneeId is already a subset of their existing
-// requesterId-OR-assigneeId scope. Shared with dashboard.service.js so
-// both mean exactly the same thing for the same scope value — no
+// This matters specifically for MANAGER/TEAMLEAD: scopeWhereForUser
+// restricts them to their own department(s), but "tickets I raised" (the
+// Raised By Me view) must include tickets raised to OTHER departments too —
+// ANDing the two would incorrectly hide those. Note MANAGER has no
+// "assigned" scope in its own UI (Managers are never assignees), but the
+// scope itself stays generic here — it's simply never requested for that
+// role. For ADMIN/EMPLOYEE this produces the exact same result as the old
+// AND-based version: ADMIN's scopeWhereForUser is unrestricted, and an
+// EMPLOYEE's own requesterId/assigneeId is already a subset of their
+// existing requesterId-OR-assigneeId scope. Shared with dashboard.service.js
+// so both mean exactly the same thing for the same scope value — no
 // duplicate/divergent filtering logic.
-function scopeWhereForTab(user, scope) {
+function scopeWhereForTab(user, scope, userDepartmentIds = []) {
   if (scope === "assigned") return { assigneeId: user.id };
   if (scope === "created") return { requesterId: user.id };
   // "mine" = raised by me OR assigned to me, as ONE query (never a summed
   // pair of separate counts) so a ticket matching both is never double
-  // counted — the exact same OR shape scopeWhereForUser already uses for a
-  // USER's own default scope, just made explicitly selectable via `scope`
-  // for any role (most usefully AGENT, whose own default scope is
-  // department-based and unrelated to requesterId/assigneeId).
+  // counted — the exact same OR shape scopeWhereForUser already uses for an
+  // EMPLOYEE's own default scope, just made explicitly selectable via
+  // `scope` for any role (most usefully TEAMLEAD, whose own default scope
+  // is department-access-based and unrelated to requesterId/assigneeId).
   if (scope === "mine") return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
   // "authorized" = global search's own scope: everything the caller is
-  // allowed to VIEW, as distinct from "department" (an AGENT's normal
-  // list default, scopeWhereForUser below) and "mine"/"created"/"assigned"
-  // (an explicit personal tab). For ADMIN/USER, scopeWhereForUser(user)
-  // already covers everything they're allowed to view (unrestricted /
-  // raised-OR-assigned respectively), so this is identical to the default
-  // branch for them. For AGENT specifically, scopeWhereForUser is
-  // department-only and misses a ticket they personally raised to a
-  // DIFFERENT department — exactly the one extra case
-  // assertCanViewForRead's own read-only exception already grants a
-  // single ticket at a time, mirrored here as a list-query OR so global
-  // search can find that ticket too, never more than what that existing
-  // exception already permits.
+  // allowed to VIEW, as distinct from "department" (a MANAGER/TEAMLEAD's
+  // normal list default, scopeWhereForUser below — every accessible
+  // department, not just one) and "mine"/"created"/"assigned" (an explicit
+  // personal tab). For ADMIN/EMPLOYEE, scopeWhereForUser(user) already
+  // covers everything they're allowed to view (unrestricted / raised-OR-
+  // assigned respectively), so this is identical to the default branch for
+  // them. For MANAGER/TEAMLEAD specifically, scopeWhereForUser only covers
+  // their accessible departments and misses a ticket they personally raised
+  // to a department they DON'T have access to — exactly the one extra case
+  // assertCanViewForRead's own read-only exception already grants a single
+  // ticket at a time, mirrored here as a list-query OR so global search can
+  // find that ticket too, never more than what that existing exception
+  // already permits.
   if (scope === "authorized") {
-    return user.role.name === "AGENT"
-      ? { OR: [scopeWhereForUser(user), { requesterId: user.id }] }
-      : scopeWhereForUser(user);
+    return isManagementRole(user)
+      ? { OR: [scopeWhereForUser(user, userDepartmentIds), { requesterId: user.id }] }
+      : scopeWhereForUser(user, userDepartmentIds);
   }
-  return scopeWhereForUser(user);
+  return scopeWhereForUser(user, userDepartmentIds);
 }
 
 async function listTickets(user, query) {
   const { page, limit, skip, take } = parsePagination(query);
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
 
   const where = {
     AND: [
-      scopeWhereForTab(user, query.scope),
+      scopeWhereForTab(user, query.scope, userDepartmentIds),
       query.status ? { status: query.status } : {},
       query.priorityId ? { priorityId: query.priorityId } : {},
       query.categoryId ? { categoryId: query.categoryId } : {},
@@ -301,14 +393,37 @@ async function listTickets(user, query) {
   return buildPagedResult(rows, total, { page, limit });
 }
 
+// Flattens the raw Prisma junction shapes (userAccess -> user, ccUsers ->
+// user) into plain arrays the frontend can render directly, split by role
+// into `managers`/`teamLeads` — same convention as
+// department.service.js#toDepartmentShape's own flattening.
+function shapeTicketDetail(ticket) {
+  return {
+    ...ticket,
+    toDepartment: ticket.toDepartment && {
+      id: ticket.toDepartment.id,
+      name: ticket.toDepartment.name,
+      managers: ticket.toDepartment.userAccess.filter((a) => a.user.role.name === "MANAGER").map((a) => a.user),
+      teamLeads: ticket.toDepartment.userAccess.filter((a) => a.user.role.name === "TEAMLEAD").map((a) => a.user),
+    },
+    ccUsers: ticket.ccUsers.map((cc) => cc.user),
+  };
+}
+
 async function getTicketById(user, id) {
   const ticket = await prisma.ticket.findUnique({ where: { id }, include: ticketDetailInclude });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanViewForRead(user, ticket);
-  return scrubInternalComments(ticket, user);
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
+  assertCanViewForRead(user, ticket, userDepartmentIds);
+  return shapeTicketDetail(scrubInternalComments(ticket, user, userDepartmentIds));
 }
 
 async function createTicket(user, payload, files = []) {
+  // Final role rule: Admin may view every ticket but never raises one.
+  if (user.role.name === "ADMIN") {
+    throw new ApiError(403, "Administrators cannot raise tickets.");
+  }
+
   // Checked first, before any other validation or async work — a brand
   // new ticket has zero existing attachments, so this is simply "the whole
   // bundled batch must fit," and it must reject the entire request before
@@ -318,23 +433,37 @@ async function createTicket(user, payload, files = []) {
     throw new ApiError(400, `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket.`);
   }
 
-  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, issueId, customIssueText } = payload;
+  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, issueId, customIssueText, ccUserIds } = payload;
 
-  const fromDepartmentId = user.departmentId;
+  // A MANAGER/TEAMLEAD's own department membership isn't the legacy
+  // User.departmentId field (they may have none, or several, via
+  // UserDepartmentAccess) — falling back to the ticket's own destination
+  // department for that case means "this request effectively originates
+  // within the department it's being raised to," which is the closest
+  // sensible meaning fromDepartmentId (an informational field, never used
+  // for authorization) can have for those two roles. An EMPLOYEE still
+  // requires their normal departmentId exactly as before.
+  const fromDepartmentId = user.departmentId || (isManagementRole(user) ? toDepartmentId : null);
   if (!fromDepartmentId) {
     throw new ApiError(400, "Your account has no department assigned. Contact an administrator.");
   }
 
-  const [priority, category, toDepartment, manager, issue] = await Promise.all([
+  const [priority, category, toDepartment, activeTeamLeads, activeManagers, issue, validCcUserIds] = await Promise.all([
     prisma.priority.findUnique({ where: { id: priorityId } }),
     categoryId ? prisma.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
     prisma.department.findUnique({ where: { id: toDepartmentId } }),
-    // The manager is never client-chosen — it's whichever AGENT is flagged
-    // as this department's manager (Admin-configured via the Users page).
-    // A department with no manager yet simply routes with managerId=null;
-    // we never fall back to a manager from a different department.
-    findActiveDepartmentManager(toDepartmentId),
+    // The department's management users are never client-chosen — every
+    // ACTIVE TEAMLEAD/MANAGER currently granted UserDepartmentAccess to this
+    // department (there may be several, or none). Ticket.managerId below is
+    // set from the first TEAMLEAD (falling back to the first MANAGER) purely
+    // as a backward-compatible historical record — it is no longer read for
+    // authorization/email purposes anywhere; the full
+    // activeTeamLeads/activeManagers lists are what actually drive the
+    // TICKET_CREATED recipients further down (TO TeamLeads, CC Managers).
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(toDepartmentId),
     prisma.issue.findUnique({ where: { id: issueId } }),
+    assertValidCcUserIds(normalizeCcUserIds(ccUserIds)),
   ]);
   if (!priority) throw new ApiError(400, "Invalid priority");
   if (categoryId && !category) throw new ApiError(400, "Invalid category");
@@ -378,7 +507,7 @@ async function createTicket(user, payload, files = []) {
         teamId: teamId || null,
         fromDepartmentId,
         toDepartmentId,
-        managerId: manager?.id || null,
+        managerId: activeTeamLeads[0]?.id || activeManagers[0]?.id || null,
         issueId,
         customIssueText: issue.isOther ? customIssueText.trim() : null,
         dueAt,
@@ -386,6 +515,15 @@ async function createTicket(user, payload, files = []) {
     });
 
     await recordHistory(tx, { ticketId: created.id, userId: user.id, action: "CREATED" });
+
+    // Custom CC — fixed for the life of the ticket (never changes on a
+    // later department transfer, see transferDepartment below).
+    if (validCcUserIds.length) {
+      await tx.ticketCC.createMany({
+        data: validCcUserIds.map((userId) => ({ ticketId: created.id, userId, addedBy: user.id })),
+        skipDuplicates: true,
+      });
+    }
 
     // Ticket numbers are stable identifiers set only at creation — never
     // regenerated by later status/assignee/department/priority changes.
@@ -408,55 +546,41 @@ async function createTicket(user, payload, files = []) {
   }
   const finalTicket = files.length > 0 ? await prisma.ticket.findUnique({ where: { id: ticket.id }, include: ticketDetailInclude }) : ticket;
 
-  // ONE email, not two: TO the destination department's manager (they need
-  // to review/assign it), CC the requester (a receipt that it was raised).
-  // If the department currently has no active manager, fall back to a
-  // solo confirmation TO the requester — there's no valid "reviewer" to
-  // address it to, but the requester should still know their ticket was
-  // recorded (handles "no manager" safely without silently sending
-  // nothing).
-  if (manager) {
-    await notificationService.notify({
-      eventKey: "TICKET_CREATED",
-      userId: manager.id,
-      ticketId: finalTicket.id,
-      type: "TICKET_CREATED",
-      ticket: finalTicket,
-      ccUserIds: [user.id],
-    });
-  } else {
-    await notificationService.notify({
-      eventKey: "TICKET_CREATED",
-      userId: user.id,
-      ticketId: finalTicket.id,
-      type: "TICKET_CREATED",
-      ticket: finalTicket,
-    });
-  }
+  // TICKET_CREATED — TO every active TEAMLEAD with access to the selected
+  // department, CC every active MANAGER + the ticket's Custom CC users (see
+  // utils/recipientBuilder.js#buildCreatedRecipients). If the department
+  // currently has no active Team Lead at all, fall back to a solo
+  // confirmation TO the requester — there's no valid reviewer to address it
+  // to, but the requester should still know their ticket was recorded
+  // (handles "no Team Lead yet" safely without silently sending nothing).
+  const created = await buildCreatedRecipients(finalTicket);
+  await notificationService.notify({
+    eventKey: "TICKET_CREATED",
+    userIds: created.userIds.length ? created.userIds : [user.id],
+    ticketId: finalTicket.id,
+    type: "TICKET_CREATED",
+    ticket: finalTicket,
+    ccUserIds: created.userIds.length ? created.ccUserIds : [],
+  });
 
   // A ticket created with an assignee already attached (e.g. an Admin
-  // pre-assigning at creation) follows the SAME recipient rule as a normal
-  // post-creation assignment (see notifyOnUpdate's ASSIGNED handling
-  // below): TO the assignee, CC the manager (unconditionally — a standing
-  // departmental record, not a "you did this" notice). The requester is
-  // NOT CC'd here since the requester IS always the actor for this call
-  // (createTicket's caller is always the requester) — they already get
-  // their own separate TICKET_CREATED confirmation above.
+  // pre-assigning at creation) follows the SAME standard recipient rule as
+  // a normal post-creation assignment (see notifyOnUpdate's ASSIGNED
+  // handling below) — TO requester + assignee, CC current department
+  // agents + Custom CC.
   if (finalTicket.assigneeId) {
-    const assignee = await prisma.user.findUnique({ where: { id: finalTicket.assigneeId } });
-    if (assignee) {
-      await notificationService.notify({
-        eventKey: "TICKET_ASSIGNED",
-        userId: assignee.id,
-        ticketId: finalTicket.id,
-        type: "TICKET_ASSIGNED",
-        ticket: finalTicket,
-        ccUserIds: manager?.id ? [manager.id] : [],
-      });
-    }
+    const standard = await buildStandardRecipients(finalTicket);
+    await notificationService.notify({
+      eventKey: "TICKET_ASSIGNED",
+      userIds: standard.userIds,
+      ticketId: finalTicket.id,
+      type: "TICKET_ASSIGNED",
+      ticket: finalTicket,
+      ccUserIds: standard.ccUserIds,
+    });
   }
 
-  return finalTicket;
+  return shapeTicketDetail(finalTicket);
 }
 
 const VALID_TRANSITIONS = {
@@ -471,32 +595,39 @@ const VALID_TRANSITIONS = {
 async function updateTicket(user, id, payload) {
   const ticket = await prisma.ticket.findUnique({ where: { id }, include: { requester: true, assignee: true } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanView(user, ticket);
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
+  assertCanView(user, ticket, userDepartmentIds);
 
+  const isAdmin = user.role.name === "ADMIN";
   const isOwner = ticket.requesterId === user.id;
   const isAssignee = ticket.assigneeId === user.id;
-  // ADMIN and the department's AGENT manager can fully manage a ticket
-  // (reassign, change priority/department/manager/etc). The USER actually
+  // A MANAGER or TEAMLEAD with access to this ticket's department (already
+  // guaranteed by assertCanView above) can fully manage it — reassign,
+  // change priority/department/manager/etc. ADMIN may VIEW and drive its
+  // status/content but, per the final role rules, may never assign,
+  // reassign, or transfer it — see the dedicated `isManagement`-gated block
+  // below, which deliberately excludes isAdmin. The EMPLOYEE actually
   // assigned to work the ticket may drive it through its status workflow
   // but never reassign or change its routing.
-  const isManagerOrAdmin = user.role.name === "ADMIN" || user.role.name === "AGENT";
-  const canDriveWorkflow = isManagerOrAdmin || isAssignee;
+  const isManagement = isManagementRole(user);
+  const canDriveWorkflow = isAdmin || isManagement || isAssignee;
 
   // The requester may edit the ORIGINAL content of a ticket they raised
   // (priority/issue/description/title) — never merely because they're the
   // assignee, and never once the ticket has reached a terminal state
   // (mirrors the same RESOLVED/CLOSED gate the owner-reopen rule below
-  // already uses). This is a separate authorization path from
-  // isManagerOrAdmin, converging on the same handful of "content" fields
+  // already uses). This is a separate authorization path from isAdmin/
+  // isManagement, converging on the same handful of "content" fields
   // further down — never on assignment/routing/status, which stay
-  // exclusively behind isManagerOrAdmin or canDriveWorkflow.
+  // exclusively behind isManagement or canDriveWorkflow.
   const canRequesterEditDetails = isOwner && !["RESOLVED", "CLOSED"].includes(ticket.status);
   // Distinguishes "the requester used their edit-my-own-ticket path" from
-  // "a manager/admin changed priority via the existing Edit Ticket dialog"
-  // — only the former should produce the new TICKET_DETAILS_UPDATED history
-  // marker/email; the latter's existing behavior (silent priority-only
-  // update, no email) must stay exactly as it was before this change.
-  const isRequesterEditPath = !isManagerOrAdmin && canRequesterEditDetails;
+  // "a manager/team lead/admin changed priority via the existing Edit
+  // Ticket dialog" — only the former should produce the new
+  // TICKET_DETAILS_UPDATED history marker/email; the latter's existing
+  // behavior (silent priority-only update, no email) must stay exactly as
+  // it was before this change.
+  const isRequesterEditPath = !isAdmin && !isManagement && canRequesterEditDetails;
 
   const data = {};
   const historyEntries = [];
@@ -566,20 +697,27 @@ async function updateTicket(user, id, payload) {
     }
   }
 
-  if (isManagerOrAdmin) {
+  // Assignment / routing — MANAGER or TEAMLEAD ONLY. ADMIN is deliberately
+  // excluded from this entire block per the final role rules ("Admin cannot
+  // assign, reassign, or transfer") even though isAdmin still participates
+  // in canDriveWorkflow (status) and the general content-edit block below.
+  if (isManagement) {
     // "Assign to Me" — a separate, narrow path from the generic assigneeId
     // field just below. It is the ONLY way a ticket's assigneeId can ever
     // become the ACTING caller's own id: never derived from a client-
-    // supplied assigneeId (which stays restricted to active USER
-    // employees via assertValidAssignee, unchanged in the branch below), so
-    // an Agent can never use the raw assigneeId field to self-assign or to
-    // assign to some OTHER Agent — only this explicit, self-only flag, and
-    // only for an AGENT (ADMIN isn't a department worker and has no
-    // "assign to me" UI action). assertCanView already guarantees an AGENT
-    // caller here is this ticket's own department manager.
+    // supplied assigneeId (which stays restricted to active EMPLOYEEs via
+    // assertValidAssignee, unchanged in the branch below), so a caller can
+    // never use the raw assigneeId field to self-assign or to assign to
+    // some OTHER staff member — only this explicit, self-only flag, and
+    // only for a TEAMLEAD. A MANAGER must never be a ticket's assignee (see
+    // the final role rules — "Manager cannot be assigned tickets"), so this
+    // flag is rejected outright for a MANAGER caller even though they
+    // otherwise sit inside this same isManagement block. assertCanView
+    // already guarantees the caller here has UserDepartmentAccess to this
+    // ticket's department.
     if (payload.assignToMe === true) {
-      if (user.role.name !== "AGENT") {
-        throw new ApiError(403, "Only a department manager can assign a ticket to themselves.");
+      if (user.role.name !== "TEAMLEAD") {
+        throw new ApiError(403, "Only a Team Lead can assign a ticket to themselves — Managers cannot be assigned tickets.");
       }
       if (ticket.assigneeId !== user.id) {
         data.assigneeId = user.id;
@@ -591,6 +729,16 @@ async function updateTicket(user, id, payload) {
       data.assigneeId = payload.assigneeId || null;
       historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assigneeId, newValue: payload.assigneeId });
     }
+    if (payload.toDepartmentId !== undefined && payload.toDepartmentId !== ticket.toDepartmentId) {
+      data.toDepartmentId = payload.toDepartmentId || null;
+      historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartmentId, newValue: payload.toDepartmentId });
+    }
+  }
+
+  // Ticket metadata (team/category) and the Admin-only manager override —
+  // none of these are "assign/reassign/transfer," so ADMIN keeps this
+  // pre-existing capability alongside MANAGER/TEAMLEAD.
+  if (isAdmin || isManagement) {
     if (payload.teamId !== undefined && payload.teamId !== ticket.teamId) {
       data.teamId = payload.teamId || null;
       historyEntries.push({ action: "TEAM_CHANGE", fieldName: "teamId", oldValue: ticket.teamId, newValue: payload.teamId });
@@ -599,19 +747,16 @@ async function updateTicket(user, id, payload) {
       data.categoryId = payload.categoryId;
       historyEntries.push({ action: "CATEGORY_CHANGE", fieldName: "categoryId", oldValue: ticket.categoryId, newValue: payload.categoryId });
     }
-    if (payload.toDepartmentId !== undefined && payload.toDepartmentId !== ticket.toDepartmentId) {
-      data.toDepartmentId = payload.toDepartmentId || null;
-      historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartmentId, newValue: payload.toDepartmentId });
-    }
     if (payload.managerId !== undefined && payload.managerId !== ticket.managerId) {
       // Only an Administrator may manually override a ticket's manager.
       // The department's manager is otherwise always server-derived (see
-      // createTicket's manager lookup) — an AGENT sits inside this same
-      // isManagerOrAdmin block for status/priority/assignee/etc, but must
-      // not be able to arbitrarily reassign a ticket's manager (e.g. to
-      // themselves), so that specific field is carved out to ADMIN-only
-      // here rather than being gated by isManagerOrAdmin like the rest.
-      if (user.role.name !== "ADMIN") {
+      // createTicket's manager lookup) — a MANAGER/TEAMLEAD sits inside
+      // this same block for team/category, but must not be able to
+      // arbitrarily reassign a ticket's manager (e.g. to themselves), so
+      // that specific field is carved out to ADMIN-only here rather than
+      // being gated by isManagement like the rest. This is a pre-existing,
+      // explicit Admin data-correction feature, not a new "assign" action.
+      if (!isAdmin) {
         throw new ApiError(403, "Only an Administrator can change a ticket's manager");
       }
       const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
@@ -622,13 +767,13 @@ async function updateTicket(user, id, payload) {
   }
 
   // Content fields — priority, issue, description, title. Editable by
-  // staff (isManagerOrAdmin, exactly as before for priority/issue) OR by
+  // staff (isAdmin/isManagement, exactly as before for priority/issue) OR by
   // the requester editing their own still-open ticket
   // (canRequesterEditDetails). Assignment/routing/status are NEVER part of
-  // this block — those stay exclusively above, gated by isManagerOrAdmin /
+  // this block — those stay exclusively above, gated by isManagement /
   // canDriveWorkflow, so a requester can never use this path to reassign,
   // reroute, or change status.
-  if (isManagerOrAdmin || canRequesterEditDetails) {
+  if (isAdmin || isManagement || canRequesterEditDetails) {
     if (payload.priorityId !== undefined && payload.priorityId !== ticket.priorityId) {
       data.priorityId = payload.priorityId;
       data.dueAt = await computeDueAt(payload.priorityId, ticket.createdAt);
@@ -693,7 +838,7 @@ async function updateTicket(user, id, payload) {
   });
 
   await notifyOnUpdate(ticket, updated, historyEntries, user);
-  return scrubInternalComments(updated, user);
+  return shapeTicketDetail(scrubInternalComments(updated, user, userDepartmentIds));
 }
 
 // Maps a status transition to its specific event key where one exists
@@ -707,111 +852,59 @@ function statusEventKey(newValue) {
   return "TICKET_STATUS_CHANGED";
 }
 
-// Picks the first id in `candidates` that isn't `excludeId` (the actor) —
-// used throughout below to find "who is the primary TO recipient," falling
-// back through a priority list (e.g. assignee, then manager) when the
-// first choice IS the actor or doesn't exist.
-function firstOther(candidates, excludeId) {
-  return candidates.find((id) => id && id !== excludeId);
-}
-
-// Builds a deduped CC id list: every candidate except falsy ones, the
-// actor, and whichever id was already chosen as TO. notify() itself also
-// drops unresolvable/inactive/duplicate-email addresses, so this only
-// needs to dedupe by id.
-function ccExcluding(candidates, ...exclude) {
-  const excluded = new Set(exclude.filter(Boolean));
-  return [...new Set(candidates.filter((id) => id && !excluded.has(id)))];
-}
-
 async function notifyOnUpdate(before, after, historyEntries, actor) {
   // Distinguishes a ticket's first-ever assignment from a later reassignment
   // — purely to pick the right event key; who gets notified is unchanged.
   const wasAlreadyAssigned = Boolean(before.assigneeId);
 
+  // Every event below shares the SAME standard recipient shape — TO
+  // requester + current assignee, CC the ticket's current department's
+  // active AGENTs + its Custom CC list (see utils/recipientBuilder.js).
+  // Computed once per call (not per history entry) since `after` — the
+  // ticket's post-update state — doesn't change across entries in the
+  // same updateTicket() call.
+  const { userIds: standardUserIds, ccUserIds: standardCcUserIds } = await buildStandardRecipients(after);
+
   for (const entry of historyEntries) {
     // --- Status changes (OPEN/IN_PROGRESS/ON_HOLD/RESOLVED/CLOSED) -------
-    // One consolidated email per transition, never one-per-recipient (the
-    // previous per-recipient loop could CC the department manager multiple
-    // times on the same status change — once per TO recipient). REOPENED
-    // has its own, different recipient shape (see below) since the
-    // relevant "who needs to act" answer is the assignee, not the
-    // requester.
-    if (entry.action === "STATUS_CHANGE" && entry.newValue !== "REOPENED") {
-      const to = firstOther([after.requesterId], actor.id);
-      if (to) {
-        await notificationService.notify({
-          eventKey: statusEventKey(entry.newValue),
-          userId: to,
-          ticketId: after.id,
-          type: "STATUS_CHANGED",
-          ticket: after,
-          statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
-          ccUserIds: ccExcluding([after.assigneeId, after.managerId], actor.id, to),
-        });
-      }
-    }
-
-    // --- Reopened ----------------------------------------------------
-    // TO the current assignee (the person who needs to act on it again);
-    // if unassigned, TO the department manager instead (someone needs to
-    // re-triage it). CC the manager (if not already TO) and the requester
-    // (unless the requester is the one who reopened it).
-    if (entry.action === "STATUS_CHANGE" && entry.newValue === "REOPENED") {
-      const to = firstOther([after.assigneeId, after.managerId], actor.id);
-      if (to) {
-        await notificationService.notify({
-          eventKey: "TICKET_REOPENED",
-          userId: to,
-          ticketId: after.id,
-          type: "STATUS_CHANGED",
-          ticket: after,
-          statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
-          ccUserIds: ccExcluding([after.managerId, after.requesterId], actor.id, to),
-        });
-      }
+    // One consolidated email per transition, never one-per-recipient.
+    // REOPENED shares this exact same recipient rule too now — no more
+    // special-cased "TO the assignee, not the requester" shape.
+    if (entry.action === "STATUS_CHANGE" && standardUserIds.length) {
+      await notificationService.notify({
+        eventKey: statusEventKey(entry.newValue),
+        userIds: standardUserIds,
+        ticketId: after.id,
+        type: "STATUS_CHANGED",
+        ticket: after,
+        statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
+        ccUserIds: standardCcUserIds,
+      });
     }
 
     // --- Assignment ----------------------------------------------------
     // Self-assignment ("Assign to Me") is a dedicated event handled in its
     // own block below — never reuses this one, and is excluded here via
     // `entry.newValue !== actor.id`.
-    //
-    // The manager is CC'd unconditionally — even when the manager IS the
-    // one who performed the assignment. This is deliberately different
-    // from every other event below: being CC'd here is a standing
-    // departmental record of who's now handling a ticket in the manager's
-    // own department, not a "you just did this" notice, so it's not
-    // excluded by the usual actor-exclusion rule. The requester, by
-    // contrast, IS excluded when they happen to be the one performing the
-    // assignment (only possible if the requester also holds a staff role)
-    // — for them a CC really would just be "you did this."
-    if (entry.action === "ASSIGNED" && after.assigneeId && entry.newValue === after.assigneeId && entry.newValue !== actor.id) {
-      const ccIds = [after.managerId, firstOther([after.requesterId], actor.id)].filter(Boolean);
+    if (entry.action === "ASSIGNED" && after.assigneeId && entry.newValue === after.assigneeId && entry.newValue !== actor.id && standardUserIds.length) {
       await notificationService.notify({
         eventKey: wasAlreadyAssigned ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
-        userId: after.assigneeId,
+        userIds: standardUserIds,
         ticketId: after.id,
         type: "TICKET_ASSIGNED",
         ticket: after,
-        ccUserIds: [...new Set(ccIds)],
+        ccUserIds: standardCcUserIds,
       });
     }
 
-    // Self-assignment ("Assign to Me") — a dedicated event, distinct from
-    // the normal manager-assigns-employee TICKET_ASSIGNED/TICKET_REASSIGNED
-    // above. TO the requester only: never "assigned to you" wording sent to
-    // the actor themselves, and never CC'd back to the actor either — the
-    // actor IS this ticket's department manager (assignToMe's own
-    // AGENT-only + assertCanView gate guarantees it), so CC-ing "the
-    // manager" here would just be CC-ing the actor on their own action,
-    // which is exactly what must never happen. Skipped entirely if the
-    // requester happens to be the actor themselves (self-raised AND
-    // self-assigned — nothing meaningful to tell them).
+    // Self-assignment ("Assign to Me") — a narrow, dedicated event outside
+    // the standard 10-event recipient matrix, left exactly as it already
+    // was: TO the requester only (never the acting Team Lead themselves), no
+    // CC, skipped entirely if the requester happens to be the actor.
     if (entry.action === "ASSIGNED" && entry.newValue === actor.id && after.requesterId && after.requesterId !== actor.id) {
       await notificationService.notify({
         eventKey: "TICKET_SELF_ASSIGNED",
-        userId: after.requesterId,
+        userIds: [after.requesterId],
         ticketId: after.id,
         type: "TICKET_ASSIGNED",
         ticket: after,
@@ -819,34 +912,25 @@ async function notifyOnUpdate(before, after, historyEntries, actor) {
     }
 
     // --- Requester edited their own ticket's content --------------------
-    // The requester is ALWAYS the actor for this event (only reachable via
-    // canRequesterEditDetails), so they are never notified about their own
-    // edit. TO the current assignee if one exists (they're the one working
-    // it), CC the manager; if unassigned, TO the manager instead (someone
-    // needs to see the change since nobody's actively assigned yet).
-    if (entry.action === "TICKET_DETAILS_UPDATED") {
-      const to = after.assigneeId || after.managerId || null;
-      if (to) {
-        const ccIds = to === after.assigneeId ? ccExcluding([after.managerId], to) : [];
-        await notificationService.notify({
-          eventKey: "TICKET_UPDATED",
-          userId: to,
-          ticketId: after.id,
-          type: "TICKET_UPDATED",
-          ticket: after,
-          ccUserIds: ccIds,
-        });
-      }
+    if (entry.action === "TICKET_DETAILS_UPDATED" && standardUserIds.length) {
+      await notificationService.notify({
+        eventKey: "TICKET_UPDATED",
+        userIds: standardUserIds,
+        ticketId: after.id,
+        type: "TICKET_UPDATED",
+        ticket: after,
+        ccUserIds: standardCcUserIds,
+      });
     }
   }
 }
 
 // Moves a ticket to a different department — a separate action from
-// updateTicket's generic toDepartmentId field (which is ADMIN/AGENT-only
-// and does NOT touch manager/assignee). This is the only path that: (a)
-// lets an assigned USER move their own ticket, and (b) automatically
+// updateTicket's generic toDepartmentId field (which is MANAGER/TEAMLEAD-
+// only and does NOT touch manager/assignee). This is the only path that:
+// (a) lets an assigned EMPLOYEE move their own ticket, and (b) automatically
 // re-derives the manager and clears the assignee, since the old assignee
-// belongs to the old department and the new department's manager must
+// belongs to the old department and the new department's management must
 // review and re-assign it themselves.
 async function transferDepartment(user, ticketId, { toDepartmentId, transferReason }) {
   const ticket = await prisma.ticket.findUnique({
@@ -854,8 +938,9 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
     include: { toDepartment: { select: { id: true, name: true } } },
   });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanView(user, ticket);
-  assertCanTransferDepartment(user, ticket);
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
+  assertCanView(user, ticket, userDepartmentIds);
+  assertCanTransferDepartment(user, ticket, userDepartmentIds);
 
   const reason = (transferReason || "").trim();
   if (!reason) throw new ApiError(400, "Transfer reason is required.");
@@ -874,13 +959,19 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
   const destinationDepartment = await prisma.department.findUnique({ where: { id: toDepartmentId } });
   if (!destinationDepartment) throw new ApiError(400, "Invalid destination department.");
 
-  // The manager is never client-chosen — always whichever active AGENT is
-  // flagged as the destination department's manager, exactly like
-  // createTicket's own manager lookup. A department with nobody currently
-  // holding that role cannot receive a transferred ticket at all.
-  const newManager = await findActiveDepartmentManager(toDepartmentId);
-  if (!newManager) {
-    throw new ApiError(400, "The selected department does not have an active manager and cannot receive transferred tickets.");
+  // The department's management users are never client-chosen — every
+  // ACTIVE TEAMLEAD/MANAGER currently granted UserDepartmentAccess to the
+  // destination department, exactly like createTicket's own lookup. A
+  // department with nobody currently holding access cannot receive a
+  // transferred ticket at all. Ticket.managerId is set from the first
+  // TEAMLEAD (falling back to the first MANAGER) purely as a backward-
+  // compatible historical record.
+  const [newActiveTeamLeads, newActiveManagers] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(toDepartmentId),
+  ]);
+  if (!newActiveTeamLeads.length && !newActiveManagers.length) {
+    throw new ApiError(400, "The selected department does not have an active Manager or Team Lead and cannot receive transferred tickets.");
   }
 
   const oldDepartmentName = ticket.toDepartment?.name || "Unassigned";
@@ -890,10 +981,10 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
       where: { id: ticketId },
       data: {
         toDepartmentId,
-        managerId: newManager.id,
+        managerId: newActiveTeamLeads[0]?.id || newActiveManagers[0]?.id || null,
         // The old assignee belongs to the OLD department and must never
         // remain assigned once the ticket routes elsewhere — the new
-        // department's manager reviews the ticket and assigns it themselves.
+        // department's agent(s) review the ticket and assign it themselves.
         assigneeId: null,
       },
       include: ticketDetailInclude,
@@ -922,24 +1013,29 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
     return result;
   });
 
-  // Dedicated event — never reuses TICKET_UPDATED. TO the destination
-  // manager (a real Notification + email, same as every other "primary
-  // recipient" call elsewhere in this file); CC the requester as an FYI
-  // only. The OLD department's manager is never CC'd (there is no implicit
-  // "current department manager" auto-CC anymore — every recipient here is
-  // explicit), and the actor is never emailed merely for having performed
-  // the transfer.
+  // Dedicated event — never reuses TICKET_UPDATED. Uses the SAME standard
+  // recipient shape as every other post-creation event (TO requester +
+  // current assignee — the assignee was just cleared above, so this is
+  // effectively "requester only" right after a transfer; CC every active
+  // TEAMLEAD and MANAGER of the ticket's CURRENT department, which by this
+  // point is already the NEW department — see buildStandardRecipients,
+  // which reads `updated.toDepartmentId`/`updated.assigneeId` as-is — plus
+  // the ticket's original Custom CC list, unchanged by the transfer). The
+  // OLD department's management users are never included: this function
+  // never queries them, and buildStandardRecipients only ever looks at the
+  // ticket's current toDepartmentId.
+  const standard = await buildStandardRecipients(updated);
   await notificationService.notify({
     eventKey: "TICKET_DEPARTMENT_TRANSFERRED",
-    userId: newManager.id,
+    userIds: standard.userIds,
     ticketId: updated.id,
     type: "TICKET_DEPARTMENT_TRANSFERRED",
     ticket: updated,
-    ccUserIds: [updated.requesterId],
+    ccUserIds: standard.ccUserIds,
     departmentTransfer: { oldDepartmentName, reason },
   });
 
-  return scrubInternalComments(updated, user);
+  return shapeTicketDetail(scrubInternalComments(updated, user, userDepartmentIds));
 }
 
 async function addComment(user, ticketId, { body, isInternal }, files = []) {
@@ -948,14 +1044,16 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
   // not just the bare ticket row.
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: ticketListInclude });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanView(user, ticket);
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
+  assertCanView(user, ticket, userDepartmentIds);
 
   // Internal notes / "first response" credit go to whoever is actually
-  // handling the ticket: the manager/admin, or the USER assigned to work it
-  // (the assignee is never staff in this model, but plays the same role).
-  const isHandler = user.role.name === "ADMIN" || user.role.name === "AGENT" || ticket.assigneeId === user.id;
+  // handling the ticket: Admin, Manager, Team Lead, or the EMPLOYEE assigned
+  // to work it (the assignee is never staff in this model, but plays the
+  // same role).
+  const isHandler = user.role.name === "ADMIN" || isManagementRole(user) || ticket.assigneeId === user.id;
   if (isInternal && !isHandler) {
-    throw new ApiError(403, "Only the manager, admin, or assigned employee can add internal notes");
+    throw new ApiError(403, "Only a manager, team lead, admin, or the assigned employee can add internal notes");
   }
 
   // Authoritative check (the commentValidator chain in ticket.routes.js is
@@ -1011,18 +1109,22 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
       })
     : comment;
 
-  // Public comments notify the other party; internal notes never leave
-  // staff (skipped entirely below — no email for anyone). See
-  // resolveCommentRecipients above for the fixed TO/CC matrix. An
-  // attachment-only public comment still triggers exactly this one email —
-  // there is no separate "attachment added" event, and addAttachment()
-  // itself never sends its own notification.
+  // Public comments notify the ticket's normal recipient group — internal
+  // notes never leave staff (skipped entirely below — no email for
+  // anyone). Uses the SAME standard TO/CC rule as every other
+  // post-creation event (TO requester + current assignee, CC current
+  // department's active agents + Custom CC) — this supersedes the old
+  // role-based comment-recipient matrix entirely, per the current
+  // recipient-architecture requirement. An attachment-only public comment
+  // still triggers exactly this one email — there is no separate
+  // "attachment added" event, and addAttachment() itself never sends its
+  // own notification.
   if (!isInternal) {
-    const { to, ccUserIds } = resolveCommentRecipients(ticket, user.id, user.role.name);
-    if (to) {
+    const { userIds, ccUserIds } = await buildStandardRecipients(ticket);
+    if (userIds.length) {
       await notificationService.notify({
         eventKey: "TICKET_COMMENT_ADDED",
-        userId: to,
+        userIds,
         ticketId,
         type: "NEW_COMMENT",
         ticket,
@@ -1038,11 +1140,16 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
 async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, teamId }) {
   if (user.role.name !== "ADMIN") throw new ApiError(403, "Only Admins can perform bulk actions");
   if (!ticketIds?.length) throw new ApiError(400, "ticketIds is required");
+  // Bulk actions are an Admin-only feature, but "assign" is still one of the
+  // operations the final role rules explicitly forbid for Admin — status/
+  // priority/team bulk edits are unaffected.
+  if (assigneeId !== undefined) {
+    throw new ApiError(403, "Administrators cannot assign tickets.");
+  }
 
   const data = {};
   if (status) data.status = status;
   if (priorityId) data.priorityId = priorityId;
-  if (assigneeId !== undefined) data.assigneeId = assigneeId || null;
   if (teamId !== undefined) data.teamId = teamId || null;
 
   await prisma.$transaction(async (tx) => {
@@ -1064,7 +1171,7 @@ async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, tea
 async function addAttachment(user, ticketId, file, commentId = null) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanView(user, ticket);
+  assertCanView(user, ticket, await resolveUserDepartmentIds(user));
 
   // Early guard — never spend an Azure upload on a request that's already
   // obviously over the limit.
@@ -1137,7 +1244,8 @@ async function addAttachment(user, ticketId, file, commentId = null) {
 async function streamAttachment(user, ticketId, attachmentId, res) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanView(user, ticket);
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
+  assertCanView(user, ticket, userDepartmentIds);
 
   const attachment = await prisma.ticketAttachment.findUnique({
     where: { id: attachmentId },
@@ -1149,7 +1257,7 @@ async function streamAttachment(user, ticketId, attachmentId, res) {
   // itself (see scrubInternalComments) — a requester who can't see the note
   // in the comment list must not be able to fetch its attachment either,
   // just by knowing/guessing the attachment's own id.
-  if (attachment.comment?.isInternal && !canViewInternalNotes(user, ticket)) {
+  if (attachment.comment?.isInternal && !canViewInternalNotes(user, ticket, userDepartmentIds)) {
     throw new ApiError(404, "Attachment not found");
   }
 
@@ -1177,23 +1285,23 @@ async function streamAttachment(user, ticketId, attachmentId, res) {
 }
 
 // Only the person who uploaded an attachment, or staff managing this
-// ticket (same isManagerOrAdmin used throughout updateTicket), may remove
-// it — mirrors the existing uploader-or-handler pattern addComment already
-// uses for internal notes. Azure deletion happens BEFORE the Postgres row
-// is removed, and its failure is never swallowed: if the blob can't be
-// deleted, the DB record is deliberately left in place (a dangling
-// reference to a blob nobody can find is far worse than a metadata row for
-// a blob that still safely exists) and the error propagates to the caller.
+// ticket (Admin, Manager, or Team Lead), may remove it — mirrors the
+// existing uploader-or-handler pattern addComment already uses for internal
+// notes. Azure deletion happens BEFORE the Postgres row is removed, and its
+// failure is never swallowed: if the blob can't be deleted, the DB record is
+// deliberately left in place (a dangling reference to a blob nobody can
+// find is far worse than a metadata row for a blob that still safely
+// exists) and the error propagates to the caller.
 async function deleteAttachment(user, ticketId, attachmentId) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
-  assertCanView(user, ticket);
+  assertCanView(user, ticket, await resolveUserDepartmentIds(user));
 
   const attachment = await prisma.ticketAttachment.findUnique({ where: { id: attachmentId } });
   if (!attachment || attachment.ticketId !== ticketId) throw new ApiError(404, "Attachment not found");
 
-  const isManagerOrAdmin = user.role.name === "ADMIN" || user.role.name === "AGENT";
-  if (attachment.uploadedById !== user.id && !isManagerOrAdmin) {
+  const isStaff = user.role.name === "ADMIN" || isManagementRole(user);
+  if (attachment.uploadedById !== user.id && !isStaff) {
     throw new ApiError(403, "You can only delete attachments you uploaded");
   }
 
@@ -1222,5 +1330,6 @@ module.exports = {
   bulkUpdate,
   scopeWhereForUser,
   scopeWhereForTab,
-  resolveCommentRecipients,
+  resolveUserDepartmentIds,
+  isManagementRole,
 };

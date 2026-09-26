@@ -15,14 +15,36 @@ router.use(authenticate);
 // Any authenticated user can update their own profile.
 router.patch("/me/profile", updateProfileValidator, validate, userController.updateProfile);
 
-// Department managers (AGENT) and Admins need this to populate the ticket
-// assignee picker — it returns eligible USER employees, not agents.
-router.get("/assignable-agents", requireRole("ADMIN", "AGENT"), userController.assignableEmployees);
+// Any authenticated role — an EMPLOYEE raising a ticket needs to search
+// coworkers to add as Custom CC, not just MANAGER/TEAMLEAD/ADMIN.
+router.get("/search", userController.searchEmployees);
+
+// The logged-in MANAGER/TEAMLEAD's own accessible departments
+// (UserDepartmentAccess) — powers the Dashboard/Tickets "All Departments ▾"
+// dropdown (a TEAMLEAD's list always has exactly one entry). Any
+// authenticated role may call this; a non-management role simply gets an
+// empty list (mirrors listAssignableEmployees' own "no access -> []" pattern).
+router.get("/me/department-access", userController.myDepartmentAccess);
+
+// MANAGER/TEAMLEAD use this to populate the actual assign/reassign picker;
+// ADMIN also needs it for the read-only Assignee FILTER on the All Tickets
+// page (AllTicketsPage.jsx) — merely being able to list eligible employees
+// is not itself an "assign" action (that power is enforced separately, at
+// updateTicket/bulkUpdate, where Admin is rejected regardless of what this
+// endpoint returns), so Admin keeps this pre-existing read capability.
+router.get("/assignable-agents", requireRole("ADMIN", "MANAGER", "TEAMLEAD"), userController.assignableEmployees);
 
 // Everything else is Admin-only user management.
 router.use(requireRole("ADMIN"));
 
-// CloudReady/Entra corporate directory — for mapping a Helpdesk USER to
+// Admin Users "Department Access" dialog: load a specific Manager/Team
+// Lead's current grants, then save a full replacement set — role-aware
+// (MAX_TEAMLEADS_PER_DEPARTMENT and "exactly one department for a TEAMLEAD"
+// are enforced server-side inside userDepartmentAccess.service.js).
+router.get("/:id/department-access", userController.getDepartmentAccess);
+router.put("/:id/department-access", userController.replaceDepartmentAccess);
+
+// CloudReady/Entra corporate directory — for mapping a Helpdesk EMPLOYEE to
 // their Entra account. Placed before "/:id" so "entra-directory" isn't
 // swallowed by that param route.
 router.get("/entra-directory", userController.entraDirectory);

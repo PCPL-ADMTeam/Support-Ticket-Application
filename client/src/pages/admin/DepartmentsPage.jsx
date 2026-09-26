@@ -29,7 +29,7 @@ import ConfirmDialog from "../../components/common/ConfirmDialog";
 const emptyDeptForm = { id: null, name: "", ticketPrefix: "" };
 
 // Card-grid overview of every department — click through to
-// DepartmentDetailsPage for manager / team members / issue management.
+// DepartmentDetailsPage for agent / team members / issue management.
 export default function DepartmentsPage() {
   const { enqueueSnackbar } = useSnackbar();
   const navigate = useNavigate();
@@ -89,7 +89,8 @@ export default function DepartmentsPage() {
 
       <Grid container spacing={2}>
         {departments.map((d) => {
-          const manager = d.managers[0] || null;
+          const managers = d.managers || [];
+          const teamLeads = d.teamLeads || [];
           return (
             <Grid item xs={12} sm={6} md={4} key={d.id}>
               <Card variant="outlined" sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -100,7 +101,14 @@ export default function DepartmentsPage() {
                       <Chip size="small" label={d.ticketPrefix} variant="outlined" sx={{ fontFamily: "monospace" }} />
                     </Stack>
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                      Manager: {manager ? manager.name : "No manager assigned"}
+                      {teamLeads.length
+                        ? `Team Leads: ${teamLeads.map((a) => a.name).join(", ")}`
+                        : "No Team Leads assigned"}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {managers.length
+                        ? `Managers: ${managers.map((a) => a.name).join(", ")}`
+                        : "No Managers assigned"}
                     </Typography>
                     <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
                       <Chip size="small" label={`${d.employees.length} Employee${d.employees.length === 1 ? "" : "s"}`} />

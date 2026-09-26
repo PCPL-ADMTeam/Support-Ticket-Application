@@ -1,6 +1,6 @@
 const authService = require("../services/auth.service");
 const env = require("../config/env");
-const { findActiveDepartmentManager } = require("../utils/departmentManager");
+const userDepartmentAccessService = require("../services/userDepartmentAccess.service");
 
 const REFRESH_COOKIE_NAME = "refreshToken";
 const REFRESH_COOKIE_OPTIONS = {
@@ -39,21 +39,26 @@ async function logout(req, res) {
   res.json({ success: true, message: "Logged out" });
 }
 
-// A regular USER doesn't manage anyone, but the Profile view benefits from
-// showing who DOES manage their department — an AGENT is that manager
-// themselves (nothing to look up) and an ADMIN has no department, so the
-// lookup only ever runs for USER accounts. Only name/email are exposed,
-// never the manager's own id-linked internals.
+// A regular EMPLOYEE doesn't manage anyone, but the Profile view benefits
+// from showing who manages their department — a department can have several
+// active Managers/Team Leads at once, so this returns the full list (never
+// just the first one) rather than a single derived "manager." MANAGER/
+// TEAMLEAD accounts manage departments themselves (nothing to look up) and
+// ADMIN has no department, so the lookup only ever runs for EMPLOYEE
+// accounts. Only name/email are exposed per person, never other internals.
 async function me(req, res) {
   const safeUser = authService.sanitizeUser(req.user);
 
-  let departmentManager = null;
-  if (req.user.role?.name === "USER" && req.user.departmentId) {
-    const manager = await findActiveDepartmentManager(req.user.departmentId);
-    if (manager) departmentManager = { name: manager.name, email: manager.email };
+  let departmentManagement = [];
+  if (req.user.role?.name === "EMPLOYEE" && req.user.departmentId) {
+    const [managers, teamLeads] = await Promise.all([
+      userDepartmentAccessService.getActiveDepartmentManagers(req.user.departmentId),
+      userDepartmentAccessService.getActiveDepartmentTeamLeads(req.user.departmentId),
+    ]);
+    departmentManagement = [...teamLeads, ...managers].map((u) => ({ name: u.name, email: u.email }));
   }
 
-  res.json({ success: true, data: { ...safeUser, departmentManager } });
+  res.json({ success: true, data: { ...safeUser, departmentManagement } });
 }
 
 async function changePassword(req, res) {

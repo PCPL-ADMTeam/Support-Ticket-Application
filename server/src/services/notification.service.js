@@ -49,47 +49,76 @@ function stripHtmlForBell(html) {
   return String(html).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-async function notify({ eventKey, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, ccUserIds = [] }) {
+// `userIds` is the event's full TO group (one or more people — e.g.
+// "requester + current assignee," or "every active department TEAMLEAD" for
+// TICKET_CREATED) — see utils/recipientBuilder.js, which is what every
+// ticket.service.js call site now goes through to compute it. Multiple TO
+// ids still produce only ONE email message (one sendMail call, every
+// resolved TO address combined into a single `to`), never one email per
+// TO id — that's what keeps "the same person in multiple recipient
+// groups" (or two different people both legitimately in TO) from ever
+// becoming multiple email sends for the same event. Each id still gets
+// its own in-app Notification row, since the bell is inherently per-user.
+async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, ccUserIds = [] }) {
+  // userId (singular) kept accepted for any caller not yet migrated to the
+  // plural form — treated as a one-element array, identical behavior.
+  const primaryIds = [...new Set((userIds || (userId ? [userId] : [])).filter(Boolean))];
+  if (!primaryIds.length) return;
+
   let recipientName;
   try {
-    const recipient = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+    const recipient = await prisma.user.findUnique({ where: { id: primaryIds[0] }, select: { name: true } });
     recipientName = recipient?.name;
   } catch (err) {
-    console.error(`[notifications] Failed to load recipient ${userId}:`, err.message);
+    console.error(`[notifications] Failed to load recipient ${primaryIds[0]}:`, err.message);
   }
 
   const rendered = await emailTemplateService.renderTemplate(eventKey, { ticket, comment, recipientName, statusChange, departmentTransfer });
   const { subject, body } = rendered || fallbackContent(eventKey, ticket);
 
-  try {
-    await prisma.notification.create({
-      data: { userId, ticketId, type: type || eventKey, title: subject, message: stripHtmlForBell(body) },
-    });
-  } catch (err) {
-    console.error("[notifications] Failed to persist notification:", err.message);
+  // One Notification (bell) row per primary recipient — independent of how
+  // many end up in the single combined email below.
+  for (const userId of primaryIds) {
+    try {
+      await prisma.notification.create({
+        data: { userId, ticketId, type: type || eventKey, title: subject, message: stripHtmlForBell(body) },
+      });
+    } catch (err) {
+      console.error("[notifications] Failed to persist notification:", err.message);
+    }
   }
 
   try {
-    const email = await emailService.resolveUserEmail(userId);
-    if (!email) return;
+    const toEmails = [];
+    const seen = new Set();
+    for (const userId of primaryIds) {
+      const email = await emailService.resolveUserEmail(userId);
+      if (!email) continue;
+      const key = email.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      toEmails.push(email);
+    }
+    if (!toEmails.length) return;
 
-    const cc = await resolveCcEmails(ccUserIds, email);
+    const cc = await resolveCcEmails(ccUserIds, seen);
 
-    await emailService.sendMail({ to: email, cc: cc.length ? cc : undefined, subject, html: body });
+    await emailService.sendMail({ to: toEmails, cc: cc.length ? cc : undefined, subject, html: body });
   } catch (err) {
-    console.error(`[notifications] Failed to email user ${userId}:`, err.message);
+    console.error(`[notifications] Failed to email ${primaryIds.join(", ")}:`, err.message);
   }
 }
 
 // Resolves each candidate CC user id to a deliverable email, silently
 // dropping: falsy ids, unresolvable users, inactive users (resolveUserEmail
-// itself now returns null for those), the primary TO address, and any
-// duplicate that already appears earlier in the list — so a caller can
-// freely pass e.g. [managerId, requesterId] without separately worrying
-// about either one coinciding with the primary recipient or with each
-// other.
-async function resolveCcEmails(ccUserIds, primaryEmail) {
-  const seen = new Set([primaryEmail.toLowerCase()]);
+// itself now returns null for those), any address already in the TO group
+// (toEmailsSeen — TO takes precedence over CC, per the recipient-builder
+// contract), and any duplicate that already appears earlier in the CC list
+// itself — so a caller can freely pass e.g. [managerId, requesterId]
+// without separately worrying about either one coinciding with a TO
+// recipient or with each other.
+async function resolveCcEmails(ccUserIds, toEmailsSeen) {
+  const seen = new Set(toEmailsSeen);
   const emails = [];
   for (const ccUserId of ccUserIds) {
     if (!ccUserId) continue;

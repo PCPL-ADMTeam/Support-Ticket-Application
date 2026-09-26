@@ -3,12 +3,15 @@ const prisma = require("../config/prisma");
 const ApiError = require("../utils/ApiError");
 const { parsePagination, buildPagedResult } = require("../utils/pagination");
 const { recordAudit } = require("../utils/audit");
+const { hasAccess: hasUserDepartmentAccess, getUserDepartmentIds } = require("./userDepartmentAccess.service");
 
-// AGENT is always the department manager and USER is never a manager, so
-// isManager is fully derived from the role rather than set independently —
-// it can never drift out of sync with the role-based business rule.
+// MANAGER and TEAMLEAD are always department-management roles and EMPLOYEE/
+// ADMIN never are, so isManager is fully derived from the role rather than
+// set independently — it can never drift out of sync with the role-based
+// business rule. Kept only for backward compatibility/history (see
+// schema.prisma) — never read for authorization purposes anymore.
 function deriveIsManager(roleName) {
-  return roleName === "AGENT";
+  return roleName === "MANAGER" || roleName === "TEAMLEAD";
 }
 
 const userListSelect = {
@@ -66,21 +69,6 @@ async function assertEntraObjectIdAvailable(entraObjectId, excludeUserId) {
   }
 }
 
-// A department can only ever have ONE active AGENT manager — AGENT IS the
-// department manager under this role model (deriveIsManager), so "manager
-// of X" literally means "the active AGENT whose departmentId is X". If a
-// user is about to become that, any OTHER active AGENT already sitting in
-// the same department must be displaced (departmentId cleared) in the same
-// transaction — otherwise a "change manager" operation silently leaves two
-// active managers for one department (the previous one never explicitly
-// demoted), which is exactly the data corruption this guards against.
-async function displaceOtherActiveManagers(tx, departmentId, excludeUserId) {
-  await tx.user.updateMany({
-    where: { departmentId, isManager: true, isActive: true, id: { not: excludeUserId } },
-    data: { departmentId: null },
-  });
-}
-
 async function createUser(actorId, payload) {
   const { name, email, password, roleName, teamIds = [], departmentId, entraObjectId } = payload;
 
@@ -93,30 +81,21 @@ async function createUser(actorId, payload) {
 
   const passwordHash = await bcrypt.hash(password, 12);
   const finalDepartmentId = departmentId || null;
-  const becomesActiveManager = deriveIsManager(role.name) && Boolean(finalDepartmentId);
 
-  const user = await prisma.$transaction(async (tx) => {
-    const created = await tx.user.create({
-      data: {
-        name,
-        email: email.toLowerCase(),
-        passwordHash,
-        roleId: role.id,
-        departmentId: finalDepartmentId,
-        isManager: deriveIsManager(role.name),
-        entraObjectId: entraObjectId || null,
-        teamMemberships: teamIds.length
-          ? { create: teamIds.map((teamId) => ({ team: { connect: { id: teamId } } })) }
-          : undefined,
-      },
-      select: userListSelect,
-    });
-
-    if (becomesActiveManager) {
-      await displaceOtherActiveManagers(tx, finalDepartmentId, created.id);
-    }
-
-    return created;
+  const user = await prisma.user.create({
+    data: {
+      name,
+      email: email.toLowerCase(),
+      passwordHash,
+      roleId: role.id,
+      departmentId: finalDepartmentId,
+      isManager: deriveIsManager(role.name),
+      entraObjectId: entraObjectId || null,
+      teamMemberships: teamIds.length
+        ? { create: teamIds.map((teamId) => ({ team: { connect: { id: teamId } } })) }
+        : undefined,
+    },
+    select: userListSelect,
   });
 
   await recordAudit({ userId: actorId, action: "USER_CREATED", entityType: "User", entityId: user.id, newValues: { name, email, roleName } });
@@ -145,8 +124,8 @@ async function updateUser(actorId, id, payload) {
   }
 
   // isManager always tracks the final role (ignoring any isManager the
-  // client sent) so an AGENT<->USER role change can never leave a stale
-  // manager flag — e.g. AGENT -> USER always clears isManager.
+  // client sent) so a role change can never leave a stale manager flag —
+  // e.g. MANAGER/TEAMLEAD -> EMPLOYEE always clears isManager.
   data.isManager = deriveIsManager(finalRoleName);
 
   if (payload.teamIds !== undefined) {
@@ -159,19 +138,12 @@ async function updateUser(actorId, id, payload) {
     }
   }
 
-  // See displaceOtherActiveManagers — this is what makes "change manager"
-  // (assigning a new AGENT to a department) correctly demote whichever
-  // AGENT previously managed it, instead of leaving both active.
-  const finalDepartmentId = payload.departmentId !== undefined ? (payload.departmentId || null) : before.departmentId;
-  const finalIsActive = payload.isActive !== undefined ? payload.isActive : before.isActive;
-  const becomesActiveManager = finalRoleName === "AGENT" && finalIsActive && Boolean(finalDepartmentId);
-
-  const user = await prisma.$transaction(async (tx) => {
-    if (becomesActiveManager) {
-      await displaceOtherActiveManagers(tx, finalDepartmentId, id);
-    }
-    return tx.user.update({ where: { id }, data, select: userListSelect });
-  });
+  // Multiple MANAGERs/TEAMLEADs may now share the same departmentId (or,
+  // more typically, department authorization comes from
+  // UserDepartmentAccess rather than departmentId at all) — no displacement
+  // of any other management user happens here anymore. departmentId on User
+  // remains a simple field update, same as any other profile attribute.
+  const user = await prisma.user.update({ where: { id }, data, select: userListSelect });
 
   await recordAudit({
     userId: actorId,
@@ -237,18 +209,34 @@ async function updateOwnProfile(userId, payload) {
   return prisma.user.update({ where: { id: userId }, data, select: userListSelect });
 }
 
-// Lightweight list for populating a ticket's "assignee" dropdown. AGENT is
-// the department manager and is never assigned a ticket — the people who
-// actually work tickets are USER employees, so this must return active
-// USERs, scoped to the requesting manager's own department. ADMIN may pass
-// an explicit departmentId to scope the same way; without one, ADMIN sees
-// every active employee (matches its existing full-system-access scope).
+// Lightweight list for populating a ticket's "assignee" dropdown (and the
+// ticket-list "Assignee" filter). MANAGER/TEAMLEAD are department-management
+// roles and are never assigned a ticket themselves — the people who
+// actually work tickets are EMPLOYEEs. Two call shapes:
+//  - an explicit departmentId is passed (the real assignment action always
+//    passes the TICKET's own toDepartmentId — see TicketDetailPage.jsx):
+//    scope to exactly that department, and for a MANAGER/TEAMLEAD caller,
+//    only after confirming UserDepartmentAccess to it — never
+//    actingUser.departmentId, which under the multi-department model no
+//    longer means "the one department this user manages."
+//  - no departmentId (the ticket-list assignee FILTER dropdown, which isn't
+//    tied to one specific ticket): for a MANAGER/TEAMLEAD, scope to the
+//    union of every department they currently have access to, so the
+//    filter can still show everyone they could possibly filter by without
+//    leaking employees of departments they can't access. ADMIN sees every
+//    active employee, matching its existing full-system-access scope.
 async function listAssignableEmployees(actingUser, { departmentId } = {}) {
-  const where = { isActive: true, role: { name: "USER" } };
+  const where = { isActive: true, role: { name: "EMPLOYEE" } };
 
-  if (actingUser.role.name === "AGENT") {
-    if (!actingUser.departmentId) return [];
-    where.departmentId = actingUser.departmentId;
+  if (actingUser.role.name === "MANAGER" || actingUser.role.name === "TEAMLEAD") {
+    if (departmentId) {
+      if (!(await hasUserDepartmentAccess(actingUser.id, departmentId))) return [];
+      where.departmentId = departmentId;
+    } else {
+      const accessibleIds = await getUserDepartmentIds(actingUser.id);
+      if (!accessibleIds.length) return [];
+      where.departmentId = { in: accessibleIds };
+    }
   } else if (departmentId) {
     where.departmentId = departmentId;
   }
@@ -260,6 +248,54 @@ async function listAssignableEmployees(actingUser, { departmentId } = {}) {
   });
 }
 
+// The one generic, reusable "search for a person" endpoint — backs the
+// Raise Ticket "Custom CC" search (any role, no role filter) AND every
+// searchable user-selector on the Admin side (Add Manager/Add Team Lead/Add
+// Employee — role-filtered via the optional `role` param), rather than each
+// screen inventing its own search. Deliberately NOT the same as GET /users
+// (Admin-only, full user-management fields) — this is reachable by any
+// authenticated role and returns only the minimal safe fields a picker
+// needs, PLUS each result's current department standing (`department`, the
+// legacy home-department field relevant to an EMPLOYEE candidate;
+// `departmentAccess`, the UserDepartmentAccess list relevant to a MANAGER/
+// TEAMLEAD candidate) so a caller can annotate/disable ineligible results
+// (e.g. "Currently Team Lead — Hardware") without a second round trip.
+// Active users only — an inactive/deactivated account can never be
+// selected anywhere this feeds. A short query is required so this can't be
+// used to dump the entire user table one keystroke at a time.
+async function searchActiveEmployees(query, { role } = {}) {
+  const search = (query || "").trim();
+  if (search.length < 2) return [];
+
+  const users = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      ...(role ? { role: { name: role } } : {}),
+      OR: [
+        { name: { contains: search, mode: "insensitive" } },
+        { email: { contains: search, mode: "insensitive" } },
+      ],
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      department: { select: { id: true, name: true } },
+      departmentAccess: { select: { department: { select: { id: true, name: true } } } },
+    },
+    orderBy: { name: "asc" },
+    take: 20,
+  });
+
+  return users.map((u) => ({
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    department: u.department,
+    departmentAccess: u.departmentAccess.map((a) => a.department),
+  }));
+}
+
 module.exports = {
   listUsers,
   getUserById,
@@ -269,4 +305,5 @@ module.exports = {
   deleteUser,
   updateOwnProfile,
   listAssignableEmployees,
+  searchActiveEmployees,
 };

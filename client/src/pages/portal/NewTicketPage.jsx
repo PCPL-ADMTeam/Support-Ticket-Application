@@ -8,8 +8,9 @@ import TicketSuccessDialog from "../../components/tickets/TicketSuccessDialog";
 import { useAuth } from "../../context/AuthContext";
 import { homeForRole } from "../../routes/ProtectedRoute";
 
-// Shared across the USER portal (/portal/new-ticket) and the AGENT
-// workspace (/agent/new-ticket) — same component, same POST /tickets flow,
+// Shared across the Employee portal (/portal/new-ticket) and the Manager/
+// Team Lead workspace (/agent/new-ticket) — same component, same POST
+// /tickets flow,
 // per the "reuse, don't duplicate" ticket-creation rule. The only thing
 // that needs to vary per caller is where "done" goes back to, so that's
 // derived from the logged-in user's own role rather than hardcoded.

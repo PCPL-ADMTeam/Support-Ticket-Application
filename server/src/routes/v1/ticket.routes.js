@@ -28,9 +28,10 @@ router.post("/bulk", requireRole("ADMIN"), bulkUpdateValidator, validate, ticket
 router.get("/:id", ticketController.getById);
 router.patch("/:id", updateTicketValidator, validate, ticketController.update);
 // Dedicated endpoint (not the generic PATCH above) — department transfer has
-// its own permission matrix (an assigned USER may transfer; an ADMIN may
-// not) and side effects (manager re-derived, assignee cleared) that don't
-// belong in updateTicket's staff-only toDepartmentId field.
+// its own permission matrix (a Manager/Team Lead with access, or the
+// assigned EMPLOYEE, may transfer; an ADMIN may not) and side effects
+// (manager re-derived, assignee cleared) that don't belong in updateTicket's
+// staff-only toDepartmentId field.
 router.patch("/:id/transfer-department", transferDepartmentValidator, validate, ticketController.transferDepartment);
 
 // Same "generous outer ceiling, real 5-per-ticket limit enforced in the

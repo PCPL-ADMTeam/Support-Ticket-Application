@@ -19,14 +19,16 @@ import {
   MenuItem,
   Stack,
   FormControlLabel,
-  Switch,
   Tooltip,
+  Checkbox,
+  FormGroup,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import BlockIcon from "@mui/icons-material/Block";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
+import ApartmentIcon from "@mui/icons-material/Apartment";
 import { useSnackbar } from "notistack";
 import { usersApi } from "../../api/users";
 import { departmentsApi } from "../../api/departments";
@@ -35,9 +37,9 @@ import LoadingState from "../../components/common/LoadingState";
 import PaginationBar from "../../components/common/PaginationBar";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
 
-const ROLES = ["ADMIN", "AGENT", "USER"];
+const ROLES = ["ADMIN", "MANAGER", "TEAMLEAD", "EMPLOYEE"];
 
-const emptyForm = { id: null, name: "", email: "", password: "", roleName: "USER", departmentId: "", isManager: false };
+const emptyForm = { id: null, name: "", email: "", password: "", roleName: "EMPLOYEE", departmentId: "" };
 
 export default function UsersPage() {
   const { enqueueSnackbar } = useSnackbar();
@@ -52,6 +54,20 @@ export default function UsersPage() {
   const [deactivateTarget, setDeactivateTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
+  // Department Access dialog (MANAGER/TEAMLEAD only) — Admins grant/revoke
+  // a given user's UserDepartmentAccess here; the department's own
+  // "Managers"/"Team Leads" lists (DepartmentDetailsPage) edit the exact
+  // same underlying data from the other direction, same convention as e.g.
+  // a group's vs. a user's membership editor.
+  const [accessTarget, setAccessTarget] = useState(null);
+  const [accessDepartmentIds, setAccessDepartmentIds] = useState([]);
+  const [accessLoading, setAccessLoading] = useState(false);
+
+  const loadDepartments = useCallback(async () => {
+    const { data } = await departmentsApi.list();
+    setDepartments(data.data);
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     const params = Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== ""));
@@ -61,7 +77,7 @@ export default function UsersPage() {
   }, [filters]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { departmentsApi.list().then(({ data }) => setDepartments(data.data)); }, []);
+  useEffect(() => { loadDepartments(); }, [loadDepartments]);
 
   const openCreate = () => { setForm(emptyForm); setDialogOpen(true); };
   const openEdit = (u) => {
@@ -72,14 +88,13 @@ export default function UsersPage() {
       password: "",
       roleName: u.role.name,
       departmentId: u.departmentId || "",
-      isManager: u.isManager,
     });
     setDialogOpen(true);
   };
 
   const handleSave = async () => {
     try {
-      const shared = { departmentId: form.departmentId || null, isManager: form.isManager };
+      const shared = { departmentId: form.departmentId || null };
       if (form.id) {
         await usersApi.update(form.id, { name: form.name, roleName: form.roleName, ...shared });
       } else {
@@ -128,6 +143,49 @@ export default function UsersPage() {
     }
   };
 
+  const openDepartmentAccess = async (u) => {
+    setAccessTarget(u);
+    setAccessLoading(true);
+    try {
+      const { data } = await usersApi.getDepartmentAccess(u.id);
+      setAccessDepartmentIds(data.data.map((d) => d.id));
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to load department access", { variant: "error" });
+      setAccessTarget(null);
+    } finally {
+      setAccessLoading(false);
+    }
+  };
+
+  // A Manager may hold several departments (checkbox multi-select, toggled
+  // one at a time); a Team Lead holds exactly one, so selecting a
+  // department for them REPLACES the whole array rather than appending —
+  // there is never a moment where the draft itself represents more than one
+  // department for that role, matching the backend's own
+  // "exactly one department for TEAMLEAD" rule.
+  const isTeamLeadTarget = accessTarget?.role.name === "TEAMLEAD";
+  const toggleAccessDepartment = (departmentId) => {
+    if (isTeamLeadTarget) {
+      setAccessDepartmentIds([departmentId]);
+      return;
+    }
+    setAccessDepartmentIds((ids) => (
+      ids.includes(departmentId) ? ids.filter((id) => id !== departmentId) : [...ids, departmentId]
+    ));
+  };
+
+  const handleSaveAccess = async () => {
+    try {
+      await usersApi.replaceDepartmentAccess(accessTarget.id, accessDepartmentIds);
+      setAccessTarget(null);
+      load();
+      loadDepartments();
+      enqueueSnackbar("Department access updated", { variant: "success" });
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to save department access", { variant: "error" });
+    }
+  };
+
   return (
     <Box>
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
@@ -162,15 +220,17 @@ export default function UsersPage() {
                   <TableCell>{u.name}</TableCell>
                   <TableCell>{u.email}</TableCell>
                   <TableCell><Chip size="small" label={u.role.name} /></TableCell>
-                  <TableCell>
-                    {u.department?.name || "—"}
-                    {u.isManager && <Chip size="small" label="Manager" sx={{ ml: 0.5 }} />}
-                  </TableCell>
+                  <TableCell>{u.department?.name || "—"}</TableCell>
                   <TableCell>
                     <Chip size="small" label={u.isActive ? "Active" : "Inactive"} color={u.isActive ? "success" : "default"} />
                   </TableCell>
                   <TableCell align="right">
                     <IconButton size="small" onClick={() => openEdit(u)} title="Edit"><EditIcon fontSize="small" /></IconButton>
+                    {(u.role.name === "MANAGER" || u.role.name === "TEAMLEAD") && (
+                      <IconButton size="small" onClick={() => openDepartmentAccess(u)} title="Department Access">
+                        <ApartmentIcon fontSize="small" />
+                      </IconButton>
+                    )}
                     {u.isActive ? (
                       <IconButton size="small" onClick={() => setDeactivateTarget(u)} title="Deactivate"><BlockIcon fontSize="small" /></IconButton>
                     ) : (
@@ -213,26 +273,91 @@ export default function UsersPage() {
             <TextField select label="Role" value={form.roleName} onChange={(e) => setForm((f) => ({ ...f, roleName: e.target.value }))} fullWidth>
               {ROLES.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}
             </TextField>
-            <TextField
-              select
-              label="Department"
-              value={form.departmentId}
-              onChange={(e) => setForm((f) => ({ ...f, departmentId: e.target.value }))}
-              fullWidth
-              helperText="The requester's own department, used to auto-fill the ticket form"
-            >
-              <MenuItem value="">None</MenuItem>
-              {departments.map((d) => <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>)}
-            </TextField>
-            <FormControlLabel
-              control={<Switch checked={form.isManager} onChange={(e) => setForm((f) => ({ ...f, isManager: e.target.checked }))} />}
-              label="Is a department manager (selectable as a ticket's Manager)"
-            />
+            {/* Department membership only applies to an Employee — a
+                Manager/Team Lead's department(s) come from the separate
+                Department Access control instead (see the icon in the table
+                above), and an Admin has no department at all. */}
+            {form.roleName === "EMPLOYEE" && (
+              <TextField
+                select
+                label="Department"
+                value={form.departmentId}
+                onChange={(e) => setForm((f) => ({ ...f, departmentId: e.target.value }))}
+                fullWidth
+                helperText="The employee's own department, used to auto-fill the ticket form"
+              >
+                <MenuItem value="">None</MenuItem>
+                {departments.map((d) => <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>)}
+              </TextField>
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleSave}>Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(accessTarget)} onClose={() => setAccessTarget(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Department Access — {accessTarget?.name}</DialogTitle>
+        <DialogContent>
+          {accessLoading ? (
+            <LoadingState />
+          ) : isTeamLeadTarget ? (
+            <Stack spacing={1} sx={{ mt: 1 }}>
+              <Typography variant="body2" color="text.secondary">
+                A Team Lead is assigned to exactly one department. Each department allows a maximum of{" "}
+                {departments[0]?.maxTeamLeads ?? 2} Team Leads.
+              </Typography>
+              <TextField
+                select
+                size="small"
+                label="Department"
+                value={accessDepartmentIds[0] || ""}
+                onChange={(e) => toggleAccessDepartment(e.target.value)}
+                sx={{ mt: 1 }}
+              >
+                <MenuItem value="">None</MenuItem>
+                {departments.map((d) => {
+                  const isCurrent = accessDepartmentIds.includes(d.id);
+                  const atMax = (d.teamLeads?.length || 0) >= d.maxTeamLeads && !isCurrent;
+                  return (
+                    <MenuItem key={d.id} value={d.id} disabled={atMax}>
+                      {atMax ? `${d.name} (full — ${d.teamLeads.length}/${d.maxTeamLeads} Team Leads)` : d.name}
+                    </MenuItem>
+                  );
+                })}
+              </TextField>
+            </Stack>
+          ) : (
+            <Stack spacing={1} sx={{ mt: 1 }}>
+              <Typography variant="body2" color="text.secondary">
+                Select the departments this manager can view and manage tickets for. There is no limit on the number
+                of departments a Manager may have.
+              </Typography>
+              <FormGroup>
+                {departments.map((d) => {
+                  const checked = accessDepartmentIds.includes(d.id);
+                  return (
+                    <FormControlLabel
+                      key={d.id}
+                      control={
+                        <Checkbox
+                          checked={checked}
+                          onChange={() => toggleAccessDepartment(d.id)}
+                        />
+                      }
+                      label={d.name}
+                    />
+                  );
+                })}
+              </FormGroup>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAccessTarget(null)}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveAccess} disabled={accessLoading}>Save</Button>
         </DialogActions>
       </Dialog>
 

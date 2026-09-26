@@ -10,6 +10,6 @@ import PortalLayout from "./PortalLayout";
 export default function RoleAwareLayout() {
   const { user } = useAuth();
   if (user.role.name === "ADMIN") return <AdminLayout />;
-  if (user.role.name === "AGENT") return <AgentLayout />;
+  if (user.role.name === "MANAGER" || user.role.name === "TEAMLEAD") return <AgentLayout />;
   return <PortalLayout />;
 }

@@ -19,7 +19,14 @@ router.get("/stats", async (req, res) => {
   // normal role-based ticket visibility (see scopeWhereForUser in
   // ticket.service).
   const scope = ["assigned", "created", "mine"].includes(req.query.scope) ? req.query.scope : undefined;
-  const stats = await dashboardService.getStats(req.user, { dateFrom, dateTo, days, scope });
+  // Manager Dashboard's department dropdown — "All Departments" (default)
+  // omits this so getStats() aggregates across every department the caller
+  // has UserDepartmentAccess to; a specific id narrows to just that one.
+  // getStats() itself re-derives the caller's accessible department set
+  // server-side and ANDs it in, so a client-supplied id outside that set
+  // can only ever narrow results to zero, never expand visibility.
+  const departmentId = req.query.departmentId || undefined;
+  const stats = await dashboardService.getStats(req.user, { dateFrom, dateTo, days, scope, departmentId });
   res.json({ success: true, data: stats });
 });
 

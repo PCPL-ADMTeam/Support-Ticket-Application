@@ -5,7 +5,8 @@ import { Paper, Typography, Table, TableHead, TableBody, TableRow, TableCell, Ch
 // manager needs the Open/In Progress/Resolved breakdown to see who's
 // actively working something vs. who's free to take on more. Backed by the
 // same /dashboard/stats `workload` array (see dashboard.service.js), which
-// is already scoped to the caller's own department for an AGENT.
+// is already scoped to the caller's own accessible department(s) for a
+// Manager/Team Lead.
 export default function EmployeeWorkloadTable({ workload }) {
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>

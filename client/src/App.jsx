@@ -83,8 +83,11 @@ export default function App() {
                 </Route>
               </Route>
 
-              {/* Agent workspace */}
-              <Route element={<ProtectedRoute allowedRoles={["AGENT"]} />}>
+              {/* Manager / Team Lead workspace — both department-management
+                  roles share this same portal (role-aware inside
+                  AgentDashboardPage/AgentQueuePage), never two separate
+                  route trees. */}
+              <Route element={<ProtectedRoute allowedRoles={["MANAGER", "TEAMLEAD"]} />}>
                 <Route path="/agent" element={<AgentLayout />}>
                   <Route index element={<AgentDashboardPage />} />
                   <Route path="queue" element={<AgentQueuePage />} />
@@ -92,8 +95,8 @@ export default function App() {
                 </Route>
               </Route>
 
-              {/* End-user support portal */}
-              <Route element={<ProtectedRoute allowedRoles={["USER"]} />}>
+              {/* Employee support portal */}
+              <Route element={<ProtectedRoute allowedRoles={["EMPLOYEE"]} />}>
                 <Route path="/portal" element={<PortalLayout />}>
                   <Route index element={<PortalDashboardPage />} />
                   <Route path="new-ticket" element={<NewTicketPage />} />

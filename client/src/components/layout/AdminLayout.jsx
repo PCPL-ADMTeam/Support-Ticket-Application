@@ -9,15 +9,16 @@ import HistoryIcon from "@mui/icons-material/History";
 import AppShell from "./AppShell";
 
 // Teams/Groups is intentionally not linked here — the department itself is
-// now the organizational group (one AGENT manager + its USER employees via
-// User.departmentId). The Team/TeamMember models, API, and admin page still
-// exist for backward compatibility with any historical data, just unused by
-// this navigation and by ticket assignment.
+// now the organizational group (its Managers and Team Leads, many-to-many
+// via UserDepartmentAccess, + its EMPLOYEE staff via User.departmentId).
+// The Team/TeamMember models, API, and admin page still exist for backward
+// compatibility with any historical data, just unused by this navigation
+// and by ticket assignment.
 //
-// ADMIN never raises tickets — that's a USER/AGENT action — so there is
-// intentionally no "Raise a Ticket" nav item and no raiseTicketPath below
-// (which is what puts the "Create Ticket" button in the header for the
-// other layouts).
+// ADMIN never raises tickets — that's a MANAGER/TEAMLEAD/EMPLOYEE action —
+// so there is intentionally no "Raise a Ticket" nav item and no
+// raiseTicketPath below (which is what puts the "Create Ticket" button in
+// the header for the other layouts).
 const navItems = [
   { to: "/admin", label: "Dashboard", icon: <DashboardIcon />, end: true },
   { to: "/admin/tickets", label: "All Tickets", icon: <ConfirmationNumberIcon /> },

@@ -1,17 +1,20 @@
 const { Prisma } = require("@prisma/client");
 const prisma = require("../config/prisma");
-const { scopeWhereForUser, scopeWhereForTab } = require("./ticket.service");
+const { scopeWhereForUser, scopeWhereForTab, resolveUserDepartmentIds, isManagementRole } = require("./ticket.service");
 
 const STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"];
 
 // Builds a raw-SQL WHERE fragment mirroring scopeWhereForUser()'s Prisma
 // `where`, for the queries below that need raw SQL (date bucketing, AVG()).
 // Values are bound via Prisma.sql template params, never string-concatenated.
-function scopeSqlForUser(user) {
+// userDepartmentIds is the caller's full UserDepartmentAccess set (see
+// ticket.service.js#resolveUserDepartmentIds) — a MANAGER may have several,
+// a TEAMLEAD always exactly one, so this is an `IN (...)`, not a single
+// equality check, and works identically either way.
+function scopeSqlForUser(user, userDepartmentIds = []) {
   if (user.role.name === "ADMIN") return Prisma.sql`TRUE`;
-  if (user.role.name === "AGENT") {
-    // AGENT = department manager: scoped to tickets routed to their department.
-    return user.departmentId ? Prisma.sql`"toDepartmentId" = ${user.departmentId}` : Prisma.sql`FALSE`;
+  if (isManagementRole(user)) {
+    return userDepartmentIds.length ? Prisma.sql`"toDepartmentId" IN (${Prisma.join(userDepartmentIds)})` : Prisma.sql`FALSE`;
   }
   return Prisma.sql`("requesterId" = ${user.id} OR "assigneeId" = ${user.id})`;
 }
@@ -22,14 +25,20 @@ function scopeSqlForUser(user) {
 // scopeWhereForTab itself is now imported from ticket.service.js (single
 // source of truth, shared with listTickets) instead of being redefined
 // here — same logic, same result, just no longer duplicated.
-function scopeSqlForTab(user, scope) {
+function scopeSqlForTab(user, scope, userDepartmentIds = []) {
   if (scope === "assigned") return Prisma.sql`"assigneeId" = ${user.id}`;
   if (scope === "created") return Prisma.sql`"requesterId" = ${user.id}`;
   if (scope === "mine") return Prisma.sql`("requesterId" = ${user.id} OR "assigneeId" = ${user.id})`;
-  return scopeSqlForUser(user);
+  return scopeSqlForUser(user, userDepartmentIds);
 }
 
-async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
+// departmentId here is the Dashboard/Tickets department-dropdown's
+// selection — "All Departments" (omitted) shows every ticket across every
+// department the caller currently has access to (userDepartmentIds, ANDed
+// onto scope exactly like listTickets' own ?departmentId= filter, so
+// selecting a department the caller doesn't actually have access to can
+// only ever narrow the result to zero, never expand it).
+async function getStats(user, { dateFrom, dateTo, days = 30, scope, departmentId } = {}) {
   const dateWhere = dateFrom || dateTo ? {
     createdAt: {
       ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
@@ -37,9 +46,13 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     },
   } : {};
 
-  const where = { AND: [scopeWhereForTab(user, scope), dateWhere] };
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
+  const departmentFilterWhere = departmentId ? { toDepartmentId: departmentId } : {};
+  const departmentFilterSql = departmentId ? Prisma.sql`AND "toDepartmentId" = ${departmentId}` : Prisma.empty;
 
-  const scopeSql = scopeSqlForTab(user, scope);
+  const where = { AND: [scopeWhereForTab(user, scope, userDepartmentIds), departmentFilterWhere, dateWhere] };
+
+  const scopeSql = scopeSqlForTab(user, scope, userDepartmentIds);
 
   // "Raised by Me" and "Total Department Tickets" are fixed-definition
   // KPIs, independent of whatever `scope` the caller passed for the
@@ -54,18 +67,21 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
   // definition scopeWhereForTab's own "created" branch already uses.
   const raisedByMeWhere = { AND: [{ requesterId: user.id }, dateWhere] };
   // assignedToMe: mirrors raisedByMe exactly, for assigneeId instead of
-  // requesterId — the Agent "My Dashboard"'s own "Assigned to Me" KPI.
+  // requesterId — the Team Lead "My Dashboard"'s own "Assigned to Me" KPI
+  // (Managers never have an "Assigned to Me" view — they're never assignees
+  // — but the field itself stays harmlessly 0 for them, same precedent as
+  // `unassignedCount` below being unused by roles that don't render it).
   const assignedToMeWhere = { AND: [{ assigneeId: user.id }, dateWhere] };
   // totalDepartmentTickets: reuses ticket.service.js's own
-  // scopeWhereForUser — for an AGENT that's exactly "tickets currently
-  // routed to my department" (toDepartmentId match), the SAME rule
-  // assertCanView/listTickets already enforce for what an Agent may even
-  // see, so this can never become a second, conflicting notion of
-  // "department ticket." For ADMIN/USER this mirrors their own normal
-  // visibility (system-wide / own tickets) — an unused-but-harmless field
-  // for roles whose dashboards don't render it, same precedent as
-  // `unassignedCount` below.
-  const departmentWhere = { AND: [scopeWhereForUser(user), dateWhere] };
+  // scopeWhereForUser — for a MANAGER/TEAMLEAD that's now "every ticket
+  // currently routed to any department I have access to" (or just the
+  // selected one, if the dropdown narrowed it), the SAME rule
+  // assertCanView/listTickets already enforce for what they may even see,
+  // so this can never become a second, conflicting notion of "department
+  // ticket." For ADMIN/EMPLOYEE this mirrors their own normal visibility
+  // (system-wide / own tickets) — an unused-but-harmless field for roles
+  // whose dashboards don't render it.
+  const departmentWhere = { AND: [scopeWhereForUser(user, userDepartmentIds), departmentFilterWhere, dateWhere] };
 
   const [
     statusGroups,
@@ -79,9 +95,9 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
     prisma.ticket.groupBy({ by: ["status"], where, _count: { _all: true } }),
     prisma.ticket.groupBy({ by: ["priorityId"], where, _count: { _all: true } }),
     prisma.ticket.count({ where }),
-    // Used by the Agent (department manager) dashboard to surface tickets
-    // nobody is working yet; harmless extra field for Admin/User, who don't
-    // display it.
+    // Used by the Manager/Team Lead department dashboard to surface tickets
+    // nobody is working yet; harmless extra field for Admin/Employee, who
+    // don't display it.
     prisma.ticket.count({ where: { AND: [...where.AND, { assigneeId: null }] } }),
     prisma.ticket.count({ where: raisedByMeWhere }),
     prisma.ticket.count({ where: assignedToMeWhere }),
@@ -116,29 +132,31 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
   const createdSeries = await prisma.$queryRaw`
     SELECT date_trunc('day', "createdAt")::date AS day, COUNT(*)::int AS count
     FROM tickets
-    WHERE ${scopeSql} AND "createdAt" >= NOW() - make_interval(days => ${days}::int)
+    WHERE ${scopeSql} ${departmentFilterSql} AND "createdAt" >= NOW() - make_interval(days => ${days}::int)
     GROUP BY 1 ORDER BY 1`;
 
   const resolvedSeries = await prisma.$queryRaw`
     SELECT date_trunc('day', "resolvedAt")::date AS day, COUNT(*)::int AS count
     FROM tickets
-    WHERE ${scopeSql} AND "resolvedAt" IS NOT NULL AND "resolvedAt" >= NOW() - make_interval(days => ${days}::int)
+    WHERE ${scopeSql} ${departmentFilterSql} AND "resolvedAt" IS NOT NULL AND "resolvedAt" >= NOW() - make_interval(days => ${days}::int)
     GROUP BY 1 ORDER BY 1`;
 
   const trend = mergeSeries(createdSeries, resolvedSeries, days);
 
-  // Employee workload: tickets per USER employee (the people tickets are
+  // Employee workload: tickets per EMPLOYEE (the people tickets are
   // actually assigned to), broken down by status. Admin sees every
-  // department; a manager's own dashboard is scoped to their department via
-  // the same ${scopeSql} filter plus an explicit departmentId match on the
-  // employee row itself. `openTickets` keeps its original definition/name
-  // (any status still not RESOLVED/CLOSED) for backward compatibility with
-  // the existing Admin dashboard's AgentWorkloadTable; inProgressTickets and
-  // resolvedTickets are additive fields for the Agent dashboard's richer
-  // Employee Workload table.
-  const departmentFilter =
-    user.role.name === "AGENT" && user.departmentId
-      ? Prisma.sql`AND u."departmentId" = ${user.departmentId}`
+  // department (or just the selected one); a Manager/Team Lead's own
+  // dashboard is scoped to every department they have access to (or just
+  // the selected one) via the same ${scopeSql} filter plus an explicit
+  // departmentId match/IN on the employee row itself. `openTickets` keeps
+  // its original definition/name (any status still not RESOLVED/CLOSED) for
+  // backward compatibility with the existing Admin dashboard's
+  // AgentWorkloadTable; inProgressTickets and resolvedTickets are additive
+  // fields for the richer Employee Workload table.
+  const workloadDepartmentFilter = departmentId
+    ? Prisma.sql`AND u."departmentId" = ${departmentId}`
+    : isManagementRole(user)
+      ? (userDepartmentIds.length ? Prisma.sql`AND u."departmentId" IN (${Prisma.join(userDepartmentIds)})` : Prisma.sql`AND FALSE`)
       : Prisma.empty;
 
   const workload = await prisma.$queryRaw`
@@ -149,9 +167,9 @@ async function getStats(user, { dateFrom, dateTo, days = 30, scope } = {}) {
       COUNT(t.id) FILTER (WHERE t.status = 'IN_PROGRESS')::int AS "inProgressTickets",
       COUNT(t.id) FILTER (WHERE t.status IN ('RESOLVED', 'CLOSED'))::int AS "resolvedTickets"
     FROM users u
-    JOIN roles r ON r.id = u."roleId" AND r.name = 'USER'
+    JOIN roles r ON r.id = u."roleId" AND r.name = 'EMPLOYEE'
     LEFT JOIN tickets t ON t."assigneeId" = u.id AND ${scopeSql}
-    WHERE u."isActive" = TRUE ${departmentFilter}
+    WHERE u."isActive" = TRUE ${workloadDepartmentFilter}
     GROUP BY u.id, u.name
     ORDER BY "openTickets" DESC`;
 

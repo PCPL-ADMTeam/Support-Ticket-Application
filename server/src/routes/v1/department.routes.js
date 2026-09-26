@@ -17,6 +17,10 @@ departmentRouter.use(requireRole("ADMIN"));
 departmentRouter.post("/", createDepartmentValidator, validate, departments.create);
 departmentRouter.patch("/:id", updateDepartmentValidator, validate, departments.update);
 departmentRouter.delete("/:id", departments.remove);
+departmentRouter.post("/:id/managers", departments.addManager);
+departmentRouter.delete("/:id/managers/:managerId", departments.removeManager);
+departmentRouter.post("/:id/team-lead", departments.setTeamLead);
+departmentRouter.delete("/:id/team-lead/:teamLeadId", departments.removeTeamLead);
 
 const issueRouter = Router();
 issueRouter.use(authenticate);

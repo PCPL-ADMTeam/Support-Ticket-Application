@@ -15,24 +15,22 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Autocomplete,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import AddIcon from "@mui/icons-material/Add";
 import { useSnackbar } from "notistack";
 import { teamsApi } from "../../api/teams";
-import { usersApi } from "../../api/users";
 import LoadingState from "../../components/common/LoadingState";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import SearchableUserSelector from "../../components/common/SearchableUserSelector";
 
-const emptyForm = { id: null, name: "", description: "", memberIds: [] };
+const emptyForm = { id: null, name: "", description: "", members: [] };
 
 export default function TeamsPage() {
   const { enqueueSnackbar } = useSnackbar();
   const [teams, setTeams] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [users, setUsers] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -45,20 +43,23 @@ export default function TeamsPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { usersApi.list({ limit: 100 }).then(({ data }) => setUsers(data.data)); }, []);
 
   const openCreate = () => { setForm(emptyForm); setDialogOpen(true); };
   const openEdit = (t) => {
-    setForm({ id: t.id, name: t.name, description: t.description || "", memberIds: t.members.map((m) => m.user.id) });
+    // Existing members are already returned in full (id/name/email) by
+    // GET /teams — hydrated straight from there rather than needing a
+    // separate eager fetch of the whole user table just to resolve names.
+    setForm({ id: t.id, name: t.name, description: t.description || "", members: t.members.map((m) => m.user) });
     setDialogOpen(true);
   };
 
   const handleSave = async () => {
     try {
+      const memberIds = form.members.map((u) => u.id);
       if (form.id) {
-        await teamsApi.update(form.id, { name: form.name, description: form.description, memberIds: form.memberIds });
+        await teamsApi.update(form.id, { name: form.name, description: form.description, memberIds });
       } else {
-        await teamsApi.create({ name: form.name, description: form.description, memberIds: form.memberIds });
+        await teamsApi.create({ name: form.name, description: form.description, memberIds });
       }
       setDialogOpen(false);
       load();
@@ -117,13 +118,12 @@ export default function TeamsPage() {
           <Stack spacing={2} sx={{ mt: 1 }}>
             <TextField label="Name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} fullWidth />
             <TextField label="Description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} fullWidth multiline minRows={2} />
-            <Autocomplete
+            <SearchableUserSelector
               multiple
-              options={users}
-              getOptionLabel={(u) => u.name}
-              value={users.filter((u) => form.memberIds.includes(u.id))}
-              onChange={(_e, value) => setForm((f) => ({ ...f, memberIds: value.map((v) => v.id) }))}
-              renderInput={(params) => <TextField {...params} label="Members" />}
+              label="Members"
+              placeholder="Search name or email..."
+              value={form.members}
+              onChange={(value) => setForm((f) => ({ ...f, members: value }))}
             />
           </Stack>
         </DialogContent>

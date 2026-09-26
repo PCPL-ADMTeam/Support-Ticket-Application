@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Grid,
@@ -15,7 +15,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  ListSubheader,
+  Autocomplete,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
@@ -122,36 +122,53 @@ export default function TicketDetailPage() {
   const [savingTransfer, setSavingTransfer] = useState(false);
 
   // Permission flags below are UI-only conveniences that mirror
-  // ticket.service.js#updateTicket's actual rules (isManagerOrAdmin,
+  // ticket.service.js#updateTicket's actual rules (isAdmin/isManagement,
   // canDriveWorkflow, canRequesterEditDetails) so the right controls simply
   // aren't rendered — they are NOT the source of truth. The backend
   // re-checks role, ownership, department membership, and ticket status on
   // every PATCH regardless of what this page shows or hides.
   const isAdmin = user.role.name === "ADMIN";
-  const isAgent = user.role.name === "AGENT";
-  const isStaff = isAdmin || isAgent;
+  const isManager = user.role.name === "MANAGER";
+  const isTeamLead = user.role.name === "TEAMLEAD";
+  const isManagement = isManager || isTeamLead;
+  const isStaff = isAdmin || isManagement;
   const isOwner = ticket?.requester.id === user.id;
   const isAssignedToMe = Boolean(ticket?.assignee?.id) && ticket.assignee.id === user.id;
 
-  // ADMIN manages every ticket; AGENT (department manager) only manages
-  // tickets already routed to their own department — matches
-  // ticket.service.js's isManagerOrAdmin exactly. In practice an AGENT can
-  // only ever be looking at a ticket in their own department to begin with
-  // (assertCanView already blocked anything else before this page could
-  // load it), but the check is kept explicit rather than assumed.
-  const canManage = isAdmin || (isAgent && Boolean(user.departmentId) && ticket?.toDepartmentId === user.departmentId);
-  const canDriveStatus = canManage || isAssignedToMe;
+  // A MANAGER/TEAMLEAD's accessible departments — fetched once (never every
+  // department) since a management-role caller may have several (Manager)
+  // or exactly one (Team Lead). Used only to decide which action buttons to
+  // RENDER; the backend independently re-derives and enforces this same set
+  // itself on every request regardless of what this page shows.
+  const [myDepartmentIds, setMyDepartmentIds] = useState([]);
+  useEffect(() => {
+    if (isManagement) {
+      usersApi.myDepartmentAccess().then(({ data }) => setMyDepartmentIds(data.data.map((d) => d.id)));
+    }
+  }, [isManagement]);
+  const hasDeptAccess = Boolean(ticket) && myDepartmentIds.includes(ticket.toDepartmentId);
+
+  // Content editing (priority/team/category via the Edit Ticket dialog) —
+  // Admin keeps this pre-existing capability alongside a Manager/Team Lead
+  // with access to the ticket's department, matching
+  // ticket.service.js#updateTicket's `isAdmin || isManagement` content block.
+  const canEditContent = isAdmin || (isManagement && hasDeptAccess);
+  // Assignment (assign/reassign) is Manager/Team-Lead-ONLY — Admin is
+  // deliberately excluded here even though canEditContent includes them,
+  // per the final role rules ("Admin cannot assign/reassign").
+  const canAssign = isManagement && hasDeptAccess;
+  const canDriveStatus = canEditContent || isAssignedToMe;
   const nextStatusOptions = ticket ? VALID_TRANSITIONS[ticket.status] || [] : [];
   // Only the requester of the ticket, and only while it's still open —
   // never merely because the current user is the assignee. Mirrors
   // ticket.service.js#updateTicket's canRequesterEditDetails exactly.
   const canEditAsRequester = isOwner && Boolean(ticket) && !["RESOLVED", "CLOSED"].includes(ticket.status);
   // Department transfer has its own permission matrix, distinct from
-  // canManage — mirrors ticket.service.js#assertCanTransferDepartment
-  // exactly: ADMIN is explicitly excluded even though canManage includes
-  // them, and only the ticket's current ASSIGNEE (never merely the
-  // requester) may transfer as a USER.
-  const canTransferDepartment = (isAgent && Boolean(user.departmentId) && ticket?.toDepartmentId === user.departmentId) || isAssignedToMe;
+  // canEditContent — mirrors ticket.service.js#assertCanTransferDepartment
+  // exactly: ADMIN is explicitly excluded even though canEditContent
+  // includes them, and only the ticket's current ASSIGNEE (never merely the
+  // requester) may transfer as an EMPLOYEE.
+  const canTransferDepartment = (isManagement && hasDeptAccess) || isAssignedToMe;
 
   const load = useCallback(async () => {
     const { data } = await ticketsApi.getById(id);
@@ -171,11 +188,11 @@ export default function TicketDetailPage() {
   // same department/role/active checks again when the assignment is saved
   // (assertValidAssignee), so this list is a convenience, not the guard.
   useEffect(() => {
-    if (canManage && ticket?.toDepartment?.id) {
+    if (canAssign && ticket?.toDepartment?.id) {
       usersApi.assignableAgents({ departmentId: ticket.toDepartment.id }).then(({ data }) => setAssignableEmployees(data.data));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canManage, ticket?.toDepartment?.id]);
+  }, [canAssign, ticket?.toDepartment?.id]);
 
   const applyUpdate = async (payload) => {
     try {
@@ -218,10 +235,10 @@ export default function TicketDetailPage() {
     const payload = {};
     const statusChanged = draftStatus !== ticket.status;
     if (statusChanged) payload.status = draftStatus;
-    // Priority is a manager/admin-only field server-side — never sent for a
-    // USER assignee, who only ever sees the Status field in this same
+    // Priority is a staff-only field server-side — never sent for an
+    // EMPLOYEE assignee, who only ever sees the Status field in this same
     // dialog (see the dialog's JSX below).
-    if (canManage && draftPriorityId !== ticket.priority.id) payload.priorityId = draftPriorityId;
+    if (canEditContent && draftPriorityId !== ticket.priority.id) payload.priorityId = draftPriorityId;
 
     const reasonConfig = statusChanged ? REASON_CONFIG[draftStatus] : null;
     if (reasonConfig) {
@@ -253,6 +270,21 @@ export default function TicketDetailPage() {
     setAssignOpen(true);
   };
 
+  // A searchable (type-to-filter) Autocomplete over the already-fetched,
+  // server-scoped `assignableEmployees` list (active EMPLOYEEs of this
+  // ticket's own department — see the effect above) rather than a plain
+  // static Select — that list is already small and correctly scoped, so
+  // this is a client-side filter over it, not a second network round trip
+  // (unlike SearchableUserSelector, which is for the larger, org-wide
+  // pickers on Department Details/Raise Ticket). "Unassigned" and
+  // "Assign to Me" are grouped separately from the real Team Members so the
+  // existing two-group layout (previously a ListSubheader) is preserved.
+  const assigneeOptions = useMemo(() => {
+    const actions = [{ id: "", name: "Unassigned", group: "Actions" }];
+    if (isTeamLead) actions.push({ id: ASSIGN_TO_ME_VALUE, name: "Assign to Me", group: "Actions" });
+    return [...actions, ...assignableEmployees.map((a) => ({ ...a, group: "Team Members" }))];
+  }, [assignableEmployees, isTeamLead]);
+
   const handleSaveAssign = async () => {
     const isAssignToMe = draftAssigneeId === ASSIGN_TO_ME_VALUE;
     const newAssigneeId = isAssignToMe ? user.id : (draftAssigneeId || null);
@@ -281,9 +313,10 @@ export default function TicketDetailPage() {
     setTransferOpen(true);
     // Fetched on open (rather than eagerly on page load) since this is a
     // rarely-used action — GET /departments is readable by everyone and
-    // already includes each department's active `managers`, letting this
-    // list filter out departments that couldn't legally receive a transfer
-    // anyway; the backend independently re-validates regardless.
+    // already includes each department's active `managers`/`teamLeads`,
+    // letting this list filter out departments that couldn't legally
+    // receive a transfer anyway; the backend independently re-validates
+    // regardless.
     departmentsApi.list().then(({ data }) => setDepartments(data.data));
   };
 
@@ -314,12 +347,12 @@ export default function TicketDetailPage() {
   if (loading || !ticket) return <LoadingState minHeight={400} />;
 
   // Every active department is shown as a possible destination except the
-  // ticket's current one — a department with no active manager is NOT
-  // hidden here; it's still listed (with a "(No active manager)" hint) so
-  // the requirement is visible rather than silently unexplained. The
-  // backend (ticket.service.js#transferDepartment) is the sole enforcement
-  // point for "destination must have an active manager" and independently
-  // rejects the transfer if selected anyway.
+  // ticket's current one — a department with no active Manager/Team Lead is
+  // NOT hidden here; it's still listed (with a "(No active management)"
+  // hint) so the requirement is visible rather than silently unexplained.
+  // The backend (ticket.service.js#transferDepartment) is the sole
+  // enforcement point for "destination must have active management" and
+  // independently rejects the transfer if selected anyway.
   const transferableDepartments = departments.filter((d) => d.id !== ticket.toDepartment?.id);
 
   const canReopen = isOwner && !isStaff && ["RESOLVED", "CLOSED"].includes(ticket.status);
@@ -396,28 +429,34 @@ export default function TicketDetailPage() {
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 2 }}>Ticket Information</Typography>
 
-            {(canManage || isAssignedToMe) && (
+            {(canEditContent || isAssignedToMe) && (
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-                {canManage && (
+                {canEditContent && (
                   <Button size="small" variant="outlined" onClick={openEditDialog}>
                     Edit Ticket
                   </Button>
                 )}
-                {!canManage && isAssignedToMe && (
+                {!canEditContent && isAssignedToMe && (
                   <Button size="small" variant="outlined" onClick={openEditDialog}>
                     Update Status
                   </Button>
                 )}
-                {canManage && (
+                {/* Assign/Reassign is Manager/Team-Lead-only — deliberately
+                    excludes Admin even though canEditContent includes them,
+                    per the final role rules ("Admin cannot assign"). Backend
+                    independently enforces the same rule regardless of this
+                    button. */}
+                {canAssign && (
                   <Button size="small" variant="contained" onClick={openAssignDialog}>
                     {ticket.assignee ? "Reassign" : "Assign Ticket"}
                   </Button>
                 )}
                 {/* Separate action from Edit Ticket — its own permission
-                    matrix (excludes ADMIN even though canManage includes
-                    them; includes an assigned USER even though they can't
-                    otherwise manage the ticket). Backend independently
-                    enforces the same rule regardless of this button. */}
+                    matrix (excludes ADMIN even though canEditContent
+                    includes them; includes an assigned EMPLOYEE even though
+                    they can't otherwise manage the ticket). Backend
+                    independently enforces the same rule regardless of this
+                    button. */}
                 {canTransferDepartment && (
                   <Button size="small" variant="outlined" color="secondary" startIcon={<SwapHorizIcon />} onClick={openTransferDialog}>
                     Transfer Department
@@ -430,7 +469,16 @@ export default function TicketDetailPage() {
               <InfoRow label="Status" value={<StatusBadge status={ticket.status} />} />
               <InfoRow label="Priority" value={<PriorityBadge name={ticket.priority.name} color={ticket.priority.color} />} />
               <InfoRow label="Department" value={ticket.toDepartment?.name || "—"} />
-              <InfoRow label="Manager" value={ticket.manager?.name || "—"} />
+              <InfoRow
+                label="Team Leads"
+                value={ticket.toDepartment?.teamLeads?.length ? ticket.toDepartment.teamLeads.map((a) => a.name).join(", ") : "—"}
+              />
+              {ticket.toDepartment?.managers?.length > 0 && (
+                <InfoRow label="Managers" value={ticket.toDepartment.managers.map((a) => a.name).join(", ")} />
+              )}
+              {ticket.ccUsers?.length > 0 && (
+                <InfoRow label="Custom CC" value={ticket.ccUsers.map((u) => u.name).join(", ")} />
+              )}
               <InfoRow
                 label="Issue"
                 value={ticket.issue ? (ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name) : "—"}
@@ -452,12 +500,12 @@ export default function TicketDetailPage() {
       </Grid>
 
       {/* Edit Ticket — Status is available to whoever may drive the
-          ticket's workflow (manager/admin OR the assignee); Priority is
-          manager/admin only. Never shown to a USER who is merely the
-          requester (they get the separate edit-icon flow instead, which
-          covers issue/priority/description via EditTicketPage/TicketForm). */}
+          ticket's workflow (staff OR the assignee); Priority is staff only.
+          Never shown to an EMPLOYEE who is merely the requester (they get
+          the separate edit-icon flow instead, which covers issue/priority/
+          description via EditTicketPage/TicketForm). */}
       <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>{canManage ? `Edit ${ticket.ticketNumber}` : `Update Status — ${ticket.ticketNumber}`}</DialogTitle>
+        <DialogTitle>{canEditContent ? `Edit ${ticket.ticketNumber}` : `Update Status — ${ticket.ticketNumber}`}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <TextField
@@ -474,7 +522,7 @@ export default function TicketDetailPage() {
               ))}
             </TextField>
 
-            {canManage && (
+            {canEditContent && (
               <TextField
                 select
                 size="small"
@@ -512,13 +560,14 @@ export default function TicketDetailPage() {
         </DialogActions>
       </Dialog>
 
-      {/* Assign / Reassign — AGENT/ADMIN only (canManage); a plain USER
-          never sees this dialog or its trigger button. "Assign to Me" is
-          only offered to an AGENT (isAgent), matching the backend's
-          AGENT-only assignToMe restriction — an ADMIN isn't a department
-          worker and has no self-assign action. The Team Members group is
+      {/* Assign / Reassign — Manager/Team-Lead only (canAssign); Admin and a
+          plain Employee never see this dialog or its trigger button.
+          "Assign to Me" is only offered to a TEAMLEAD (isTeamLead), matching
+          the backend's TEAMLEAD-only assignToMe restriction — a MANAGER is
+          never a ticket assignee (see the final role rules) and an ADMIN
+          isn't a department worker either. The Team Members group is
           populated from the existing assignable-employees API, already
-          scoped server-side to active USER employees in this ticket's own
+          scoped server-side to active EMPLOYEEs in this ticket's own
           department — never every employee, never re-filtered client-side
           as the source of truth. */}
       <Dialog open={assignOpen} onClose={() => setAssignOpen(false)} maxWidth="xs" fullWidth>
@@ -530,20 +579,22 @@ export default function TicketDetailPage() {
                 Current assignee: <strong>{ticket.assignee.name}</strong>
               </Typography>
             )}
-            <TextField
-              select
+            <Autocomplete
               size="small"
-              label={ticket.assignee ? "New assignee" : "Assignee"}
-              value={draftAssigneeId}
-              onChange={(e) => setDraftAssigneeId(e.target.value)}
-              SelectProps={{ displayEmpty: true }}
-              InputLabelProps={{ shrink: true }}
-            >
-              <MenuItem value="">Unassigned</MenuItem>
-              {isAgent && <MenuItem value={ASSIGN_TO_ME_VALUE}>Assign to Me</MenuItem>}
-              <ListSubheader>Team Members</ListSubheader>
-              {assignableEmployees.map((a) => <MenuItem key={a.id} value={a.id}>{a.name}</MenuItem>)}
-            </TextField>
+              options={assigneeOptions}
+              groupBy={(option) => option.group}
+              getOptionLabel={(option) => option.name}
+              isOptionEqualToValue={(a, b) => a.id === b.id}
+              value={assigneeOptions.find((o) => o.id === draftAssigneeId) || null}
+              onChange={(_e, option) => setDraftAssigneeId(option?.id || "")}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label={ticket.assignee ? "New assignee" : "Assignee"}
+                  placeholder="Search employee..."
+                />
+              )}
+            />
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -582,7 +633,7 @@ export default function TicketDetailPage() {
               <MenuItem value="" disabled>Select destination department</MenuItem>
               {transferableDepartments.map((d) => (
                 <MenuItem key={d.id} value={d.id}>
-                  {d.name}{!d.managers?.length ? " (No active manager)" : ""}
+                  {d.name}{!d.teamLeads?.length && !d.managers?.length ? " (No active management)" : ""}
                 </MenuItem>
               ))}
             </TextField>

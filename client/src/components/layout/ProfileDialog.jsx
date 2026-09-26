@@ -55,7 +55,7 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
   }, [open, user.name]);
 
   // The session's `user` (set at login/refresh) doesn't carry a couple of
-  // profile-only fields (e.g. departmentManager) that GET /auth/me adds —
+  // profile-only fields (e.g. departmentManagement) that GET /auth/me adds —
   // re-fetch on open so the panel always reflects the full, current record.
   useEffect(() => {
     if (open) refreshMe().catch(() => {});
@@ -113,7 +113,6 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
             <Typography variant="body2" color="text.secondary">{user.email}</Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 0.75, rowGap: 0.5 }}>
               <Chip size="small" variant="outlined" color="primary" label={user.role.label} />
-              {user.isManager && <Chip size="small" variant="outlined" color="secondary" label="Department Manager" />}
               <Chip size="small" variant="outlined" color={user.isActive ? "success" : "default"} label={user.isActive ? "Active" : "Inactive"} />
             </Stack>
           </Box>
@@ -128,10 +127,20 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
             <Grid item xs={12} sm={6}>
               <Stack spacing={2}>
                 <ProfileField label="Department" value={user.department?.name} />
-                <ProfileField
-                  label="Reporting Manager"
-                  value={user.departmentManager ? `${user.departmentManager.name} (${user.departmentManager.email})` : null}
-                />
+                {user.departmentManagement?.length > 0 && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Department Management
+                    </Typography>
+                    <Stack spacing={0.25}>
+                      {user.departmentManagement.map((a) => (
+                        <Typography key={a.email} variant="body2" fontWeight={600}>
+                          {a.name} ({a.email})
+                        </Typography>
+                      ))}
+                    </Stack>
+                  </Box>
+                )}
               </Stack>
             </Grid>
             <Grid item xs={12} sm={6}>

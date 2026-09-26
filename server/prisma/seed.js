@@ -1,4 +1,4 @@
-// Idempotent seed script: safe to re-run. Creates the three system roles,
+// Idempotent seed script: safe to re-run. Creates the four system roles,
 // a default admin account, sample teams/categories/priorities/SLA policies,
 // a few extra users, and a handful of sample tickets to populate the
 // dashboard on first run.
@@ -25,10 +25,11 @@ async function upsertUser({ name, email, password, roleId }) {
 async function main() {
   console.log("Seeding database...");
 
-  const [adminRole, agentRole, userRole] = await Promise.all([
+  const [adminRole] = await Promise.all([
     upsertRole("ADMIN", "Administrator"),
-    upsertRole("AGENT", "Agent"),
-    upsertRole("USER", "End User"),
+    upsertRole("MANAGER", "Manager"),
+    upsertRole("TEAMLEAD", "Team Lead"),
+    upsertRole("EMPLOYEE", "Employee"),
   ]);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL || "helpdesk@powercen.com";
@@ -164,9 +165,9 @@ async function main() {
     },
   ];
 
-  // No separate "manager" users are seeded — a department manager is just an
-  // existing Agent with isManager=true (set below on the sample agents).
-  // Admins pick which agents manage which department from the Users page.
+  // No separate management users are seeded here — a department's
+  // Managers/Team Leads are granted via UserDepartmentAccess, which Admins
+  // set up from the Users/Department Details pages after seeding.
   const departments = {};
   for (const def of departmentDefs) {
     const department = await prisma.department.upsert({

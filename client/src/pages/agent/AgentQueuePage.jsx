@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Box, Stack, Tabs, Tab, Typography, ToggleButtonGroup, ToggleButton } from "@mui/material";
 import TicketsListPage from "../TicketsListPage";
+import { useAuth } from "../../context/AuthContext";
 
 // ONE page (/agent/queue), ONE ticket list at a time, driven by `?view=`
 // ("my", default, or "department") and, within "my", `?scope=` ("created",
@@ -19,6 +20,8 @@ import TicketsListPage from "../TicketsListPage";
 // of the server's own scopes to request, never filters a full dataset
 // client-side.
 export default function AgentQueuePage() {
+  const { user } = useAuth();
+  const isManager = user.role.name === "MANAGER";
   const [searchParams, setSearchParams] = useSearchParams();
   // Global header search (see AppShell.jsx) lands here as plain
   // `?search=...`, with NO `view` of its own — it means "search everything
@@ -45,9 +48,12 @@ export default function AgentQueuePage() {
   // actually applied; see additionalFilters below.
   const view = searchParams.has("view")
     ? (searchParams.get("view") === "department" ? "department" : "my")
-    : (isGlobalSearch ? "department" : "my");
+    : (isGlobalSearch || isManager ? "department" : "my");
   const isMy = view === "my";
-  const myScope = searchParams.get("scope") === "assigned" ? "assigned" : "created";
+  // A Manager has no "Assigned to Me" data (never a ticket assignee — see
+  // the final role rules), so their My Tickets tab is always Raised by Me
+  // regardless of any stale ?scope= left in the URL.
+  const myScope = !isManager && searchParams.get("scope") === "assigned" ? "assigned" : "created";
 
   // Merges into the CURRENT params rather than replacing them outright, so
   // switching tabs/sub-scope never silently drops an active `search` (or
@@ -90,7 +96,7 @@ export default function AgentQueuePage() {
         <Tab label="Department Tickets" value="department" id="agent-tickets-department-tab" />
       </Tabs>
 
-      {isMy && (
+      {isMy && !isManager && (
         <ToggleButtonGroup exclusive size="small" value={myScope} onChange={handleMyScopeChange}>
           <ToggleButton value="created" sx={{ minWidth: 140, justifyContent: "center" }}>Raised by Me</ToggleButton>
           <ToggleButton value="assigned" sx={{ minWidth: 140, justifyContent: "center" }}>Assigned to Me</ToggleButton>
@@ -107,7 +113,13 @@ export default function AgentQueuePage() {
           showAssignee={!isMy || myScope === "created"}
           showAssigneeFilter={!isMy}
           showAssignedFilter={!isMy}
-          showDepartment={isMy}
+          // Department column is always shown now — a Manager's Department
+          // Tickets tab can span every department they have access to. The
+          // Department FILTER dropdown, however, is Manager-only — a Team
+          // Lead has exactly one department and nothing to choose between
+          // (see the final role rules — "Do NOT show [All Departments]" for
+          // Team Lead).
+          showDepartmentFilter={!isMy && isManager}
           highlightUnassigned={!isMy}
           additionalFilters={additionalFilters}
         />

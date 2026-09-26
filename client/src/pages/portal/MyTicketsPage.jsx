@@ -7,11 +7,11 @@ const SCOPE_LABELS = {
   assigned: "Assigned to Me",
 };
 
-// A single unified list by default — not "Created"/"Assigned" tabs. USER's
-// backend scope (ticket.service.js#scopeWhereForUser) already means
-// "requesterId = me OR assigneeId = me" as ONE query, so a ticket the user
-// both raised and is assigned to is never duplicated. When arriving from a
-// dashboard KPI/card (DashboardPage.jsx's goToTickets), the URL carries
+// A single unified list by default — not "Created"/"Assigned" tabs. An
+// Employee's backend scope (ticket.service.js#scopeWhereForUser) already
+// means "requesterId = me OR assigneeId = me" as ONE query, so a ticket the
+// user both raised and is assigned to is never duplicated. When arriving
+// from a dashboard KPI/card, the URL carries
 // ?scope=created|assigned, which TicketsListPage forwards straight through
 // to GET /tickets — this page just reflects that back in the heading so
 // the active scope is obvious, per the dashboard-navigation fix.

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Box, Fade, Grid, Stack, Typography, Button, ToggleButtonGroup, ToggleButton } from "@mui/material";
+import { Box, Fade, Grid, Stack, Typography, Button, ToggleButtonGroup, ToggleButton, TextField, MenuItem } from "@mui/material";
 import ListAltIcon from "@mui/icons-material/ListAlt";
 import AssignmentLateIcon from "@mui/icons-material/AssignmentLate";
 import PendingActionsIcon from "@mui/icons-material/PendingActions";
@@ -10,6 +10,7 @@ import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import ApartmentIcon from "@mui/icons-material/Apartment";
 import { subDays } from "date-fns";
 import { dashboardApi } from "../../api/dashboard";
+import { usersApi } from "../../api/users";
 import { useAuth } from "../../context/AuthContext";
 import LoadingState from "../../components/common/LoadingState";
 import KpiCard from "../../components/dashboard/KpiCard";
@@ -77,28 +78,59 @@ function DashboardViewSwitch({ view, onChange }) {
 // authenticated req.user server-side, never a client-supplied value.
 //
 // "department": no scope passed, so dashboardService's normal role-based
-// visibility (scopeWhereForUser) applies — for an AGENT that's exactly
-// "every ticket routed to my department," real backend-enforced scoping,
-// unaffected by who raised a given ticket.
+// visibility (scopeWhereForUser) applies — for a MANAGER/TEAMLEAD that's
+// exactly "every ticket routed to a department I have access to," real
+// backend-enforced scoping, unaffected by who raised a given ticket.
+//
+// MANAGER vs TEAMLEAD differences (both share this one component, per the
+// final role rules — never two separate dashboard pages):
+//  - TEAMLEAD keeps the original behavior exactly: defaults to "My
+//    Dashboard," and "My Dashboard" itself offers both Raised by Me and
+//    Assigned to Me (a Team Lead can be a ticket's assignee). "Department
+//    Dashboard" is always their own single accessible department — no
+//    department dropdown is ever shown, since there's nothing to choose
+//    between.
+//  - MANAGER instead defaults to "Department Dashboard" showing ALL their
+//    accessible departments, offers a department dropdown there (they may
+//    have several), and their "My Dashboard" has no Raised/Assigned toggle
+//    at all — only Raised by Me, since a Manager is never a ticket assignee
+//    and therefore has no "Assigned to Me" data to switch to.
 export default function AgentDashboardPage() {
-  const { user } = useAuth();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isManager = user.role.name === "MANAGER";
   const [searchParams, setSearchParams] = useSearchParams();
-  const view = searchParams.get("view") === "department" ? "department" : "my";
-  const myScope = searchParams.get("scope") === "assigned" ? "assigned" : "created";
+  const view = searchParams.has("view")
+    ? (searchParams.get("view") === "department" ? "department" : "my")
+    : (isManager ? "department" : "my");
+  // A Manager has no "Assigned to Me" data (never a ticket assignee), so
+  // their My Dashboard is always Raised by Me regardless of any stale
+  // ?scope= left in the URL.
+  const myScope = !isManager && searchParams.get("scope") === "assigned" ? "assigned" : "created";
+  // "" = All Departments (the default) — every department this MANAGER has
+  // UserDepartmentAccess to, aggregated. A specific id narrows the whole
+  // Department Dashboard (KPIs, charts, workload table) to just that one.
+  // Never applicable to a TEAMLEAD, who has exactly one department and no
+  // dropdown to select from.
+  const departmentId = view === "department" && isManager ? searchParams.get("departmentId") || "" : "";
 
   const [days, setDays] = useState(30);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [myDepartments, setMyDepartments] = useState([]);
+
+  useEffect(() => {
+    usersApi.myDepartmentAccess().then(({ data }) => setMyDepartments(data.data)).catch(() => setMyDepartments([]));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     const dateFrom = subDays(new Date(), days).toISOString();
     const scope = view === "my" ? myScope : undefined;
-    const { data } = await dashboardApi.getStats({ days, dateFrom, scope });
+    const { data } = await dashboardApi.getStats({ days, dateFrom, scope, departmentId: departmentId || undefined });
     setStats(data.data);
     setLoading(false);
-  }, [days, view, myScope]);
+  }, [days, view, myScope, departmentId]);
 
   useEffect(() => {
     load();
@@ -109,6 +141,12 @@ export default function AgentDashboardPage() {
     if (!value) return; // ToggleButtonGroup fires with null when the active button is clicked again
     setSearchParams({ view: "my", scope: value });
   };
+  const handleDepartmentChange = (e) => {
+    const value = e.target.value;
+    const next = { view: "department" };
+    if (value) next.departmentId = value;
+    setSearchParams(next);
+  };
 
   // Drills into the SAME /agent/queue page's own My Tickets sub-filter (see
   // AgentQueuePage.jsx) — never a separate route — always using the My
@@ -116,7 +154,7 @@ export default function AgentDashboardPage() {
   // while viewing Assigned to Me opens the queue scoped to assigned+OPEN,
   // never silently falling back to Raised by Me.
   const goToMyFilteredTickets = (params) => navigate(`/agent/queue?${new URLSearchParams({ view: "my", scope: myScope, ...params }).toString()}`);
-  const goToDepartmentTickets = (params) => navigate(`/agent/queue?${new URLSearchParams({ view: "department", ...params }).toString()}`);
+  const goToDepartmentTickets = (params) => navigate(`/agent/queue?${new URLSearchParams({ view: "department", ...(departmentId ? { departmentId } : {}), ...params }).toString()}`);
 
   const kpis = stats?.kpis;
   const byStatus = stats?.byStatus;
@@ -138,10 +176,35 @@ export default function AgentDashboardPage() {
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
             {view === "my"
               ? "Your personal tickets and assignments"
-              : (user.department ? `${user.department.name} Department` : "No department assigned — contact an administrator")}
+              : (() => {
+                  if (!myDepartments.length) return "No department access assigned — contact an administrator";
+                  // A Team Lead has exactly one accessible department — show
+                  // it directly, never an "All Departments" framing that
+                  // implies a choice they don't have.
+                  if (!isManager) return myDepartments[0].name;
+                  if (!departmentId) return `All Departments (${myDepartments.length})`;
+                  return myDepartments.find((d) => d.id === departmentId)?.name || "All Departments";
+                })()}
           </Typography>
         </Box>
-        <DateRangeFilter days={days} onChange={setDays} />
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "flex-end" }}>
+          {view === "department" && isManager && (
+            <TextField
+              select
+              size="small"
+              label="Department"
+              value={departmentId}
+              onChange={handleDepartmentChange}
+              sx={{ minWidth: 200 }}
+            >
+              <MenuItem value="">All Departments</MenuItem>
+              {myDepartments.map((d) => (
+                <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>
+              ))}
+            </TextField>
+          )}
+          <DateRangeFilter days={days} onChange={setDays} />
+        </Stack>
       </Stack>
 
       {loading || !stats ? (
@@ -159,11 +222,17 @@ export default function AgentDashboardPage() {
                     nav shortcut, this one IS the My Dashboard's own data
                     mode: selecting it re-fetches stats with scope=created or
                     scope=assigned (see `load` above) rather than navigating
-                    away — one dashboard, two datasets, same layout. */}
-                <ToggleButtonGroup exclusive size="small" value={myScope} onChange={handleMyScopeChange}>
-                  <ToggleButton value="created" sx={{ minWidth: 140, justifyContent: "center" }}>Raised by Me</ToggleButton>
-                  <ToggleButton value="assigned" sx={{ minWidth: 140, justifyContent: "center" }}>Assigned to Me</ToggleButton>
-                </ToggleButtonGroup>
+                    away — one dashboard, two datasets, same layout. A
+                    Manager has no "Assigned to Me" data (never a ticket
+                    assignee — see the final role rules), so this toggle is
+                    hidden entirely for that role and My Dashboard is simply
+                    always Raised by Me. */}
+                {!isManager && (
+                  <ToggleButtonGroup exclusive size="small" value={myScope} onChange={handleMyScopeChange}>
+                    <ToggleButton value="created" sx={{ minWidth: 140, justifyContent: "center" }}>Raised by Me</ToggleButton>
+                    <ToggleButton value="assigned" sx={{ minWidth: 140, justifyContent: "center" }}>Assigned to Me</ToggleButton>
+                  </ToggleButtonGroup>
+                )}
 
                 {/* Personal KPIs — one flex row (not the 12-column Grid,
                     since 6 doesn't divide evenly into 12) keeps all 6 cards
