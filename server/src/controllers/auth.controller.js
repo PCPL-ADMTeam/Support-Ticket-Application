@@ -46,8 +46,13 @@ async function logout(req, res) {
 // TEAMLEAD accounts manage departments themselves (nothing to look up) and
 // ADMIN has no department, so the lookup only ever runs for EMPLOYEE
 // accounts. Only name/email are exposed per person, never other internals.
+//
+// `department`/`departmentAccess` on the returned user (via
+// authService.buildAuthenticatedUser — the SAME shared shape
+// login/refresh use) are role-aware: correct for MANAGER/TEAMLEAD via
+// UserDepartmentAccess, unchanged (legacy field) for EMPLOYEE/ADMIN.
 async function me(req, res) {
-  const safeUser = authService.sanitizeUser(req.user);
+  const authenticatedUser = await authService.buildAuthenticatedUser(req.user);
 
   let departmentManagement = [];
   if (req.user.role?.name === "EMPLOYEE" && req.user.departmentId) {
@@ -58,7 +63,7 @@ async function me(req, res) {
     departmentManagement = [...teamLeads, ...managers].map((u) => ({ name: u.name, email: u.email }));
   }
 
-  res.json({ success: true, data: { ...safeUser, departmentManagement } });
+  res.json({ success: true, data: { ...authenticatedUser, departmentManagement } });
 }
 
 async function changePassword(req, res) {

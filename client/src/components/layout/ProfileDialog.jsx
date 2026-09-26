@@ -127,6 +127,22 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
             <Grid item xs={12} sm={6}>
               <Stack spacing={2}>
                 <ProfileField label="Department" value={user.department?.name} />
+                {/* A Manager can hold several departments at once — `department`
+                    (singular) is deliberately null for that role rather than
+                    misrepresenting one of several as "the" department (see
+                    authService#buildAuthenticatedUser), so this shows the full
+                    list instead. Never rendered for a Team Lead/Employee, whose
+                    single `department` above already covers it. */}
+                {!user.department && user.departmentAccess?.length > 0 && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Department Access
+                    </Typography>
+                    <Typography variant="body2" fontWeight={600}>
+                      {user.departmentAccess.map((d) => d.name).join(", ")}
+                    </Typography>
+                  </Box>
+                )}
                 {user.departmentManagement?.length > 0 && (
                   <Box>
                     <Typography variant="caption" color="text.secondary">

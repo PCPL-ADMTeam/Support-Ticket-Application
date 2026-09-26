@@ -13,6 +13,12 @@ const createTicketValidator = [
   body("customIssueText").optional({ nullable: true }).isString(),
   body("assigneeId").optional({ nullable: true }).isString(),
   body("teamId").optional({ nullable: true }).isString(),
+  // MANAGER-only: which of their several UserDepartmentAccess departments
+  // this ticket is raised "from" (Raise Ticket's From Department dropdown —
+  // see ticket.service.js#resolveFromDepartmentId). Type-checked here only;
+  // ignored entirely for EMPLOYEE/TEAMLEAD (server-derived for them), and
+  // validated against the caller's actual UserDepartmentAccess for MANAGER.
+  body("fromDepartmentId").optional({ nullable: true }).isString(),
 ];
 
 const updateTicketValidator = [

@@ -220,7 +220,18 @@ export default function UsersPage() {
                   <TableCell>{u.name}</TableCell>
                   <TableCell>{u.email}</TableCell>
                   <TableCell><Chip size="small" label={u.role.name} /></TableCell>
-                  <TableCell>{u.department?.name || "—"}</TableCell>
+                  {/* department/departmentAccess are already role-resolved
+                      server-side (see user.service.js#attachDepartmentInfo)
+                      — a MANAGER's departmentAccess may hold several
+                      departments (never truncated to the first one), a
+                      TEAMLEAD's holds exactly one, and an EMPLOYEE/ADMIN
+                      row's `department` is the existing legacy field,
+                      unchanged. */}
+                  <TableCell>
+                    {u.departmentAccess?.length > 0
+                      ? u.departmentAccess.map((d) => d.name).join(", ")
+                      : u.department?.name || "—"}
+                  </TableCell>
                   <TableCell>
                     <Chip size="small" label={u.isActive ? "Active" : "Inactive"} color={u.isActive ? "success" : "default"} />
                   </TableCell>

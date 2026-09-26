@@ -43,6 +43,46 @@ async function hasAccess(userId, departmentId) {
   return Boolean(row);
 }
 
+// THE one shared "what department(s) does this user currently belong to,
+// right now" resolver — role-aware, so every screen that needs to show or
+// derive a user's department (Users page, /auth/login, /auth/refresh,
+// /auth/me, Profile, Raise Ticket) reads the exact same answer instead of
+// each picking its own source. This replaces the legacy assumption of
+// reading `User.departmentId` unconditionally, which is only ever correct
+// for an EMPLOYEE now:
+//   EMPLOYEE -> User.departmentId (the legacy field itself, passed in as
+//               `user.department`, already the right source and untouched
+//               here)
+//   TEAMLEAD -> their one UserDepartmentAccess department (never more than
+//               one, enforced elsewhere) — surfaced as BOTH a singular
+//               `department` (for screens that expect one) and a
+//               single-element `departmentAccess` array
+//   MANAGER  -> ALL their UserDepartmentAccess departments — surfaced only
+//               as `departmentAccess` (plural); `department` is
+//               deliberately left null rather than misrepresenting one of
+//               several as "the" department
+//   ADMIN    -> no department restriction; both fields empty/null
+// `user` must include `role: { name }` and (for the EMPLOYEE branch) the
+// legacy `department` relation already loaded by the caller — this
+// function never re-fetches those, only the UserDepartmentAccess side.
+async function resolveUserDepartmentInfo(user) {
+  const roleName = user.role?.name;
+
+  if (roleName === "TEAMLEAD") {
+    const departments = await getUserDepartments(user.id);
+    return { department: departments[0] || null, departmentAccess: departments };
+  }
+
+  if (roleName === "MANAGER") {
+    const departments = await getUserDepartments(user.id);
+    return { department: null, departmentAccess: departments };
+  }
+
+  // EMPLOYEE and ADMIN — legacy field remains the correct (and, for ADMIN,
+  // simply absent) source; no UserDepartmentAccess involvement.
+  return { department: user.department || null, departmentAccess: [] };
+}
+
 // Active MANAGERs currently authorized for a department — used for the
 // email CC group (see utils/recipientBuilder.js) and the Department Details
 // "Managers" section. Inactive/deactivated users are excluded so a stale
@@ -232,6 +272,7 @@ async function replaceUserDepartmentAccess(actorId, userId, departmentIds) {
 module.exports = {
   getUserDepartments,
   getUserDepartmentIds,
+  resolveUserDepartmentInfo,
   hasAccess,
   getActiveDepartmentManagers,
   getActiveDepartmentTeamLeads,

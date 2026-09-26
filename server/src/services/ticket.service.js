@@ -187,6 +187,58 @@ async function assertValidAssignee(assigneeId, departmentId) {
   }
 }
 
+// Resolves a new ticket's `fromDepartmentId` — an informational field
+// (never used for authorization) recording which department the request
+// effectively originates from. Role-aware, using the SAME UserDepartmentAccess
+// source of truth as everywhere else in the four-role model — never the
+// client blindly trusted, and never silently defaulted for a role that has
+// a real, unambiguous answer:
+//   EMPLOYEE — their own User.departmentId (legacy field remains correct
+//              and authoritative for this role); rejected if unset.
+//   TEAMLEAD — their exactly-one UserDepartmentAccess department, always
+//              server-derived — a client-supplied value is never even
+//              read for this role, since there is nothing to choose.
+//   MANAGER  — the caller PICKS one of their several UserDepartmentAccess
+//              departments (Raise Ticket's "From Department" dropdown);
+//              an explicit selection is validated against that list and
+//              rejected if it doesn't belong to them, exactly like any
+//              other server-independent validation in this file. If none
+//              was supplied (an older client), falls back to the ticket's
+//              own destination department when that happens to be one of
+//              theirs, else their first accessible department.
+//   ADMIN    — never reaches here; createTicket rejects Admin earlier.
+async function resolveFromDepartmentId(user, payloadFromDepartmentId, toDepartmentId) {
+  const roleName = user.role.name;
+
+  if (roleName === "EMPLOYEE") {
+    if (!user.departmentId) {
+      throw new ApiError(400, "Your account has no department assigned. Contact an administrator.");
+    }
+    return user.departmentId;
+  }
+
+  if (roleName === "TEAMLEAD") {
+    const ids = await userDepartmentAccessService.getUserDepartmentIds(user.id);
+    if (!ids.length) {
+      throw new ApiError(400, "Your account has no department assigned. Contact an administrator.");
+    }
+    return ids[0];
+  }
+
+  // MANAGER
+  const ids = await userDepartmentAccessService.getUserDepartmentIds(user.id);
+  if (!ids.length) {
+    throw new ApiError(400, "Your account has no department assigned. Contact an administrator.");
+  }
+  if (payloadFromDepartmentId) {
+    if (!ids.includes(payloadFromDepartmentId)) {
+      throw new ApiError(400, "Invalid From Department — you do not have access to that department.");
+    }
+    return payloadFromDepartmentId;
+  }
+  return ids.includes(toDepartmentId) ? toDepartmentId : ids[0];
+}
+
 // Custom CC (TicketCC) — validated server-side regardless of what the
 // Raise Ticket UI's search/picker already filtered client-side. Returns
 // the deduped, validated id list; throws on the first id that isn't a
@@ -433,20 +485,9 @@ async function createTicket(user, payload, files = []) {
     throw new ApiError(400, `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket.`);
   }
 
-  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, issueId, customIssueText, ccUserIds } = payload;
+  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, issueId, customIssueText, ccUserIds, fromDepartmentId: payloadFromDepartmentId } = payload;
 
-  // A MANAGER/TEAMLEAD's own department membership isn't the legacy
-  // User.departmentId field (they may have none, or several, via
-  // UserDepartmentAccess) — falling back to the ticket's own destination
-  // department for that case means "this request effectively originates
-  // within the department it's being raised to," which is the closest
-  // sensible meaning fromDepartmentId (an informational field, never used
-  // for authorization) can have for those two roles. An EMPLOYEE still
-  // requires their normal departmentId exactly as before.
-  const fromDepartmentId = user.departmentId || (isManagementRole(user) ? toDepartmentId : null);
-  if (!fromDepartmentId) {
-    throw new ApiError(400, "Your account has no department assigned. Contact an administrator.");
-  }
+  const fromDepartmentId = await resolveFromDepartmentId(user, payloadFromDepartmentId, toDepartmentId);
 
   const [priority, category, toDepartment, activeTeamLeads, activeManagers, issue, validCcUserIds] = await Promise.all([
     prisma.priority.findUnique({ where: { id: priorityId } }),

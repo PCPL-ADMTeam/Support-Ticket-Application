@@ -11,6 +11,7 @@ const {
 } = require("../utils/jwt");
 const emailTemplateService = require("./emailTemplate.service");
 const emailService = require("./email.service");
+const userDepartmentAccessService = require("./userDepartmentAccess.service");
 
 // Only @powercen.com is a valid company email — an exact domain match
 // (never a substring/contains check), so "user@otherpowercen.com" or
@@ -45,6 +46,21 @@ function sanitizeUser(user) {
   return safe;
 }
 
+// The ONE shared shape every authenticated-user payload returns —
+// POST /auth/login, POST /auth/refresh, and GET /auth/me all go through
+// this instead of each building its own response, so a MANAGER/TEAMLEAD's
+// department information can never drift between them. `user` must already
+// include `role` (and, for the EMPLOYEE branch, the legacy `department`
+// relation) exactly as every caller here already loads it.
+// Overwrites the raw legacy `department` relation from `user` with the
+// role-aware resolution (see userDepartmentAccessService#resolveUserDepartmentInfo)
+// — a no-op for EMPLOYEE/ADMIN (same value), the actual fix for MANAGER/TEAMLEAD.
+async function buildAuthenticatedUser(user) {
+  const safe = sanitizeUser(user);
+  const { department, departmentAccess } = await userDepartmentAccessService.resolveUserDepartmentInfo(user);
+  return { ...safe, department, departmentAccess };
+}
+
 async function issueTokenPair(user) {
   const accessToken = signAccessToken(user);
   const refreshToken = signRefreshToken(user);
@@ -76,7 +92,7 @@ async function login(email, password) {
   }
 
   const tokens = await issueTokenPair(user);
-  return { user: sanitizeUser(user), ...tokens };
+  return { user: await buildAuthenticatedUser(user), ...tokens };
 }
 
 async function refresh(token) {
@@ -104,7 +120,7 @@ async function refresh(token) {
   await prisma.refreshToken.update({ where: { id: stored.id }, data: { revokedAt: new Date() } });
   const tokens = await issueTokenPair(user);
 
-  return { user: sanitizeUser(user), ...tokens };
+  return { user: await buildAuthenticatedUser(user), ...tokens };
 }
 
 async function logout(token) {
@@ -196,4 +212,4 @@ async function resetPassword(token, newPassword) {
   ]);
 }
 
-module.exports = { login, refresh, logout, changePassword, forgotPassword, resetPassword, sanitizeUser };
+module.exports = { login, refresh, logout, changePassword, forgotPassword, resetPassword, sanitizeUser, buildAuthenticatedUser };

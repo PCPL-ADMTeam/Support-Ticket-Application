@@ -62,12 +62,15 @@ export default function TicketFilters({ filters, onChange, showAssigneeFilter, s
 
   // Issue options come from whichever department is relevant: an ADMIN
   // picks a department first (same cascading UX as TicketForm's own
-  // Department -> Issue picker); a Team Lead's department is already fixed by
-  // their own account, so their issues are available immediately with
-  // nothing to pick.
+  // Department -> Issue picker); a Team Lead's department is already fixed
+  // by their UserDepartmentAccess, and a Manager's "own" department for
+  // this fallback is their first accessible one (their My Tickets tab,
+  // where this branch applies, isn't itself department-scoped) — neither
+  // reads the legacy User.departmentId, which is only meaningful for an
+  // Employee.
   const issueSourceDepartment = showDepartmentFilter
     ? departments.find((d) => d.id === filters.departmentId)
-    : departments.find((d) => d.id === user.departmentId);
+    : departments.find((d) => d.id === (user.departmentAccess?.[0]?.id ?? user.departmentId));
   const issueOptions = issueSourceDepartment?.issues || [];
 
   const handleDepartmentChange = (e) => {

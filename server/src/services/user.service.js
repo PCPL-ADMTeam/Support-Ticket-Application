@@ -29,6 +29,45 @@ const userListSelect = {
   teamMemberships: { select: { team: { select: { id: true, name: true } } } },
 };
 
+// Overwrites `department`/adds `departmentAccess` on each row so the Admin
+// Users page shows the CURRENT source of truth per role — `department`
+// above (from the `userListSelect` include) is only ever the legacy
+// User.departmentId relation, which is correct for EMPLOYEE but stale or
+// simply absent for MANAGER/TEAMLEAD (see
+// userDepartmentAccessService#resolveUserDepartmentInfo, the same shared
+// resolver /auth/login, /auth/refresh, and /auth/me use, so the Users page
+// can never show something different from what that user sees of
+// themselves). Batches ONE UserDepartmentAccess query for every MANAGER/
+// TEAMLEAD row on the page rather than one query per row.
+async function attachDepartmentInfo(rows) {
+  const managementIds = rows.filter((u) => u.role.name === "MANAGER" || u.role.name === "TEAMLEAD").map((u) => u.id);
+  if (!managementIds.length) return rows.map((u) => ({ ...u, departmentAccess: [] }));
+
+  const accessRows = await prisma.userDepartmentAccess.findMany({
+    where: { userId: { in: managementIds } },
+    select: { userId: true, department: { select: { id: true, name: true } } },
+    orderBy: { department: { name: "asc" } },
+  });
+  const byUserId = new Map();
+  for (const row of accessRows) {
+    if (!byUserId.has(row.userId)) byUserId.set(row.userId, []);
+    byUserId.get(row.userId).push(row.department);
+  }
+
+  return rows.map((u) => {
+    if (u.role.name === "TEAMLEAD") {
+      const departments = byUserId.get(u.id) || [];
+      return { ...u, department: departments[0] || null, departmentAccess: departments };
+    }
+    if (u.role.name === "MANAGER") {
+      // Never falsely represent one of several as "the" department — see
+      // resolveUserDepartmentInfo's same rule for the auth payload.
+      return { ...u, department: null, departmentAccess: byUserId.get(u.id) || [] };
+    }
+    return { ...u, departmentAccess: [] };
+  });
+}
+
 async function listUsers(query) {
   const { page, limit, skip, take } = parsePagination(query);
   const where = {
@@ -49,13 +88,14 @@ async function listUsers(query) {
     prisma.user.count({ where }),
   ]);
 
-  return buildPagedResult(rows, total, { page, limit });
+  return buildPagedResult(await attachDepartmentInfo(rows), total, { page, limit });
 }
 
 async function getUserById(id) {
   const user = await prisma.user.findUnique({ where: { id }, select: userListSelect });
   if (!user) throw new ApiError(404, "User not found");
-  return user;
+  const [shaped] = await attachDepartmentInfo([user]);
+  return shaped;
 }
 
 // entraObjectId is @unique in the DB too, but that raw constraint error

@@ -113,6 +113,13 @@ export default function TicketForm({
 }) {
   const { user } = useAuth();
   const isEdit = mode === "edit";
+  // A Manager may hold several departments (UserDepartmentAccess) — unlike
+  // an Employee/Team Lead, who each have exactly one unambiguous "From
+  // Department," a Manager must pick which of theirs this request is from
+  // (see the "From Department" field below and
+  // ticket.service.js#resolveFromDepartmentId, which independently
+  // validates whatever is submitted here against their real access).
+  const isManagerRole = user.role.name === "MANAGER";
 
   const [departments, setDepartments] = useState([]);
   const [priorities, setPriorities] = useState([]);
@@ -147,6 +154,7 @@ export default function TicketForm({
           issueId: "",
           customIssueText: "",
           description: "",
+          fromDepartmentId: isManagerRole ? (user.departmentAccess?.[0]?.id || "") : "",
         }
   );
 
@@ -173,6 +181,13 @@ export default function TicketForm({
         (d) => d.id === form.toDepartmentId
       ) || null,
     [departments, form.toDepartmentId]
+  );
+
+  // Manager-only — which of their own UserDepartmentAccess departments this
+  // request is "from" (see the "From Department" field below).
+  const selectedFromDepartment = useMemo(
+    () => (user.departmentAccess || []).find((d) => d.id === form.fromDepartmentId) || null,
+    [user.departmentAccess, form.fromDepartmentId]
   );
 
   const selectedIssue = useMemo(
@@ -442,6 +457,14 @@ export default function TicketForm({
       );
     }
 
+    // Manager-only — see ticket.service.js#resolveFromDepartmentId, which
+    // independently validates this against the caller's real
+    // UserDepartmentAccess; never sent for Employee/Team Lead, both of whom
+    // have their From Department derived server-side instead.
+    if (isManagerRole && form.fromDepartmentId) {
+      formData.append("fromDepartmentId", form.fromDepartmentId);
+    }
+
     ccSelected.forEach((u) => {
       formData.append("ccUserIds", u.id);
     });
@@ -519,12 +542,12 @@ export default function TicketForm({
         }}
       >
         <Stack spacing={3}>
-          {/* A home department is required for an EMPLOYEE (their normal
-              department membership) but not for a MANAGER/TEAMLEAD, who can
-              raise a ticket without one — their own "From Department"
-              simply has nothing distinct to show (see the read-only field
-              below), unlike an Employee, who is always tied to one. */}
-          {!user.department && user.role.name === "EMPLOYEE" ? (
+          {/* A home department is required to raise a ticket at all — for an
+              EMPLOYEE that's User.departmentId, for a MANAGER it's having
+              at least one UserDepartmentAccess department to pick from. A
+              TEAMLEAD always has exactly one (enforced elsewhere) so is
+              never blocked here. */}
+          {(!user.department && user.role.name === "EMPLOYEE") || (isManagerRole && !user.departmentAccess?.length) ? (
             <Alert severity="warning">
               Your account has no department assigned,
               so you can't raise a ticket yet. Contact
@@ -653,15 +676,41 @@ export default function TicketForm({
                     From Department
                   </Typography>
 
-                  <TextField
-                    fullWidth
-                    value={user.department?.name || "—"}
-                    helperText="Your department"
-                    size="small"
-                    InputProps={{
-                      readOnly: true,
-                    }}
-                  />
+                  {isManagerRole ? (
+                    // A Manager has no single home department — they pick
+                    // which of their own accessible departments this
+                    // request is from; the backend independently validates
+                    // the selection against their real UserDepartmentAccess
+                    // (see ticket.service.js#resolveFromDepartmentId) and
+                    // never trusts this value alone.
+                    <Autocomplete
+                      fullWidth
+                      size="small"
+                      options={user.departmentAccess || []}
+                      getOptionLabel={(d) => d.name}
+                      value={selectedFromDepartment}
+                      onChange={(_, value) => setForm((prev) => ({ ...prev, fromDepartmentId: value?.id || "" }))}
+                      renderInput={(params) => (
+                        <TextField {...params} placeholder="Select department" helperText="Your department" />
+                      )}
+                    />
+                  ) : (
+                    // Employee/Team Lead each have exactly one unambiguous
+                    // department — Employee via User.departmentId, Team
+                    // Lead via their one UserDepartmentAccess row (both
+                    // already resolved into `user.department` by
+                    // authService#buildAuthenticatedUser) — so this stays a
+                    // plain read-only field, never a picker, for either.
+                    <TextField
+                      fullWidth
+                      value={user.department?.name || "—"}
+                      helperText="Your department"
+                      size="small"
+                      InputProps={{
+                        readOnly: true,
+                      }}
+                    />
+                  )}
                 </Box>
 
                 <Box sx={{ flex: 1 }}>
